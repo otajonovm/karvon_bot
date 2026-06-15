@@ -10,6 +10,7 @@ const {
   acceptOrder,
 } = require('./lib/notifications');
 const { insertOrder } = require('./lib/orders');
+const { normalizePhone } = require('./lib/normalize');
 const { REGIONS, CAR_TYPES, ROLES, ROUTES, DRIVER_STATUS } = require('./config/constants');
 const { BTN_SEEKING, BTN_BUSY, driverStatusKeyboard } = require('./lib/driverUi');
 const { setDriverStatus, getDriverProfile } = require('./lib/drivers');
@@ -206,6 +207,20 @@ bot.command('profile', async (ctx) => {
 
     if (user.role !== ROLES.DRIVER) {
       return ctx.reply('Bu buyruq faqat haydovchilar uchun.');
+    }
+
+    const existing = await getDriverProfile(userId);
+    if (existing) {
+      const statusLabel =
+        existing.status === DRIVER_STATUS.BUSY ? '🔴 Bandman' : '🟢 Yuk qidiryapman';
+      return ctx.reply(
+        `🚛 <b>Profilingiz</b>\n\n` +
+          `Mashina: <b>${existing.car_type}</b>\n` +
+          `Yo'nalish: <b>${existing.preferred_route}</b>\n` +
+          `Holat: ${statusLabel}\n\n` +
+          'Yangilash uchun mashina turini tanlang:',
+        { parse_mode: 'HTML', ...carTypeKeyboard('profile_car') }
+      );
     }
 
     profileSessions.set(userId, { step: 'car_type' });
@@ -536,27 +551,31 @@ bot.action(/^contact_order_(.+)$/, async (ctx) => {
       return ctx.answerCbQuery('Faqat haydovchilar uchun');
     }
 
-    const result = await acceptOrder(orderId, driverId);
+    const { data: order, error } = await supabase
+      .from('orders')
+      .select('*')
+      .eq('id', orderId)
+      .single();
 
-    if (!result.success) {
-      if (result.reason === 'already_taken') {
-        await ctx.answerCbQuery('Bu yuk allaqachon olingan!');
-      } else {
-        await ctx.answerCbQuery('Buyurtma topilmadi');
-      }
-      return;
+    if (error || !order) {
+      return ctx.answerCbQuery('Buyurtma topilmadi');
     }
 
-    const order = result.order;
-    const phone = order.phone_number;
+    const phone = normalizePhone(order.phone_number) || order.phone_number;
+    const tel = phone.replace(/\s/g, '');
 
-    await ctx.answerCbQuery("Telefon yuborildi");
+    await ctx.answerCbQuery('📞 Telefon');
     await ctx.reply(
-      `📞 <b>Mijoz telefoni:</b> <a href="tel:${phone.replace(/\s/g, '')}">${phone}</a>`,
-      { parse_mode: 'HTML', disable_web_page_preview: true }
+      `📞 <b>Qo'ng'iroq qiling:</b>\n<a href="tel:${tel}">${phone}</a>`,
+      { parse_mode: 'HTML', ...driverStatusKeyboard() }
     );
 
-    await markOrderTakenForOthers(ctx.telegram, order, driverId);
+    if (order.status === 'active') {
+      const result = await acceptOrder(orderId, driverId);
+      if (result.success) {
+        await markOrderTakenForOthers(ctx.telegram, result.order, driverId);
+      }
+    }
   } catch (err) {
     console.error('[contact_order]', err.message);
     await ctx.answerCbQuery('Xatolik yuz berdi');
