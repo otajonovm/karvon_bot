@@ -1,11 +1,10 @@
-# DigitalOcean App Platform — Worker (HTTP kerak emas)
-# Dashboard: Create App → GitHub → otajonovm/karvon_bot → Edit Spec → bu faylni qo'llang
-# YOKI: doctl apps create --spec .do/app.yaml
+# DigitalOcean App Platform — Web Service + health check
+# Dashboard: Apps → karvon-bot → Settings → App Spec → Edit → Save → Deploy
 
 name: karvon-bot
 region: fra
 
-workers:
+services:
   - name: karvon
     github:
       repo: otajonovm/karvon_bot
@@ -15,10 +14,21 @@ workers:
     environment_slug: node-js
     instance_size_slug: basic-xxs
     instance_count: 1
+    http_port: 8080
     run_command: npm start
+    health_check:
+      initial_delay_seconds: 60
+      period_seconds: 10
+      timeout_seconds: 5
+      success_threshold: 1
+      failure_threshold: 5
+      http_path: /health
     envs:
       - key: NODE_ENV
         value: production
+        scope: RUN_TIME
+      - key: PORT
+        value: "8080"
         scope: RUN_TIME
       - key: BOT_TOKEN
         scope: RUN_TIME

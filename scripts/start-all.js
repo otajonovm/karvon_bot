@@ -7,11 +7,13 @@ const fs = require('fs');
 const path = require('path');
 const { killStaleKarvonProcesses } = require('./stop-karvon');
 const { deleteWebhook } = require('../lib/botApi');
+const { startHealthServer } = require('../lib/healthServer');
 
 require('../config/env');
 
 const ROOT = path.join(__dirname, '..');
 const LOCK_FILE = path.join(ROOT, '.karvon-start.lock');
+const IS_CLOUD = !!(process.env.DO_APP_ID || process.env.PORT);
 const procs = new Map();
 let shuttingDown = false;
 
@@ -81,7 +83,7 @@ function startService(name, script, delayMs = 0) {
       const wait = name === 'bot' && code === 1 ? 20_000 : 5_000;
       log(`${name} to'xtadi (kod: ${code}). ${wait / 1000}s dan keyin qayta ishga tushadi...`);
 
-      if (name === 'bot') {
+      if (name === 'bot' && !IS_CLOUD) {
         killStaleKarvonProcesses();
         deleteWebhook().catch(() => {});
       }
@@ -110,10 +112,15 @@ function shutdown() {
 }
 
 async function main() {
-  await ensureSingleInstance();
-  log('Eski jarayonlar tekshirilmoqda...');
-  killStaleKarvonProcesses();
-  await new Promise((r) => setTimeout(r, 3000));
+  startHealthServer();
+
+  if (!IS_CLOUD) {
+    await ensureSingleInstance();
+    log('Eski jarayonlar tekshirilmoqda...');
+    killStaleKarvonProcesses();
+    await new Promise((r) => setTimeout(r, 3000));
+  }
+
   await deleteWebhook();
 
   log('═══════════════════════════════════════');

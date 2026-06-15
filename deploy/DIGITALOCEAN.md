@@ -88,10 +88,12 @@ pm2 restart all
 
 ## 2-usul: App Platform — GitHub dan avto-deploy
 
-1. DigitalOcean → **Apps** → **Create App**
+1. DigitalOcean → **Apps** → **Create App** (yoki mavjud app ni tahrirlang)
 2. **GitHub** → `otajonovm/karvon_bot` → branch `main`
-3. **Edit Spec** → `.do/app.yaml` mazmunini qo'llang
-4. **Environment Variables** (SECRET) qo'shing:
+3. **Component turi: Web Service** (Worker emas!) — `http_port: 8080`
+4. **Edit Spec** → `.do/app.yaml` mazmunini qo'llang
+5. **Health check path:** `/health`
+6. **Environment Variables** (SECRET) qo'shing:
 
 | Key | Majburiy |
 |---|---|
@@ -105,9 +107,9 @@ pm2 restart all
 | `TELEGRAM_SESSION` | Ha |
 | `TELEGRAM_USE_WSS` | `1` |
 
-5. **Instance**: Basic XXS ($5/oy) yetarli
-6. **Deploy**
+5. **Deploy**
 
+> Health check: `npm start` `PORT` da `/health` ga `200 OK` qaytaradi.
 > App Platform da faqat **1 nusxa** ishlating (409 conflict bo'lmasin).
 
 ---
