@@ -93,19 +93,24 @@ pm2 restart all
 3. **Component turi: Web Service** (Worker emas!) — `http_port: 8080`
 4. **Edit Spec** → `.do/app.yaml` mazmunini qo'llang
 5. **Health check path:** `/health`
-6. **Environment Variables** (SECRET) qo'shing:
+5. **Environment Variables** — **App-Level** da barchasini qo'shing (Encrypt):
 
-| Key | Majburiy |
-|---|---|
-| `BOT_TOKEN` | Ha |
-| `API_ID` | Ha |
-| `API_HASH` | Ha |
-| `SUPABASE_URL` | Ha |
-| `SUPABASE_KEY` | Ha |
-| `DEEPSEEK_API_KEY` | Ha (yoki `GEMINI_API_KEY`) |
-| `CARGO_GROUPS` | Ha |
-| `TELEGRAM_SESSION` | Ha |
+| Key | Qayerdan |
+|-----|----------|
+| `BOT_TOKEN` | @BotFather |
+| `API_ID` | my.telegram.org |
+| `API_HASH` | my.telegram.org |
+| `SUPABASE_URL` | Supabase → Settings → API |
+| `SUPABASE_KEY` | Supabase → anon/service key |
+| `DEEPSEEK_API_KEY` | platform.deepseek.com |
+| `CARGO_GROUPS` | `-1002468475563,-1002956624079,-1002182000321` |
+| `TELEGRAM_SESSION` | Lokal `session.txt` dan nusxa |
 | `TELEGRAM_USE_WSS` | `1` |
+| `NODE_ENV` | `production` |
+| `PORT` | `8080` |
+
+> **Muhim:** Har bir o'zgaruvchini yozib **Save** bosing, keyin **Actions → Deploy** qiling.
+> Logda `Missing required env variable` ko'rsa — o'sha kalit DO da yo'q.
 
 5. **Deploy**
 

@@ -8,6 +8,7 @@ const path = require('path');
 const { killStaleKarvonProcesses } = require('./stop-karvon');
 const { deleteWebhook } = require('../lib/botApi');
 const { startHealthServer } = require('../lib/healthServer');
+const { validateEnv, printEnvHelp } = require('../lib/validateEnv');
 
 require('../config/env');
 
@@ -71,7 +72,7 @@ function startService(name, script, delayMs = 0) {
     const child = spawn(process.execPath, [path.join(ROOT, script)], {
       cwd: ROOT,
       stdio: 'inherit',
-      env: process.env,
+      env: { ...process.env },
     });
 
     procs.set(name, child);
@@ -79,6 +80,7 @@ function startService(name, script, delayMs = 0) {
     child.on('exit', (code, signal) => {
       procs.delete(name);
       if (shuttingDown || signal === 'SIGINT' || signal === 'SIGTERM') return;
+      if (process.env.KARVON_ENV_INVALID === '1') return;
 
       const wait = name === 'bot' && code === 1 ? 20_000 : 5_000;
       log(`${name} to'xtadi (kod: ${code}). ${wait / 1000}s dan keyin qayta ishga tushadi...`);
@@ -113,6 +115,14 @@ function shutdown() {
 
 async function main() {
   startHealthServer();
+
+  const missing = validateEnv({ requireSession: IS_CLOUD });
+  if (missing.length > 0) {
+    process.env.KARVON_ENV_INVALID = '1';
+    printEnvHelp(missing);
+    log('Bot va scraper ishga tushirilmadi — avval env larni to\'ldiring.');
+    return;
+  }
 
   if (!IS_CLOUD) {
     await ensureSingleInstance();
