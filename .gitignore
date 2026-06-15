@@ -1,0 +1,8 @@
+node_modules/
+session.txt
+karvon-qr.png
+.env
+karvon.env
+.karvon-start.lock
+*.log
+.DS_Store
