@@ -58,6 +58,9 @@ const liveStats = { processed: 0 };
 // ─── Session ─────────────────────────────────────────────────────────────────
 
 function loadSession() {
+  if (process.env.TELEGRAM_SESSION?.trim()) {
+    return process.env.TELEGRAM_SESSION.trim();
+  }
   try {
     if (fs.existsSync(SESSION_FILE)) {
       return fs.readFileSync(SESSION_FILE, 'utf8').trim();
@@ -69,6 +72,10 @@ function loadSession() {
 }
 
 function saveSession(sessionString) {
+  if (process.env.TELEGRAM_SESSION) {
+    console.log('[session] Yangi session — DigitalOcean da TELEGRAM_SESSION secret ni yangilang');
+    return;
+  }
   fs.writeFileSync(SESSION_FILE, sessionString, 'utf8');
   console.log(`[session] Saved to ${SESSION_FILE}`);
 }
@@ -91,6 +98,12 @@ async function ensureLoggedIn(client) {
   if (await client.checkAuthorization()) {
     console.log('[scraper] Oldingi session orqali avtomatik kirildi');
     return;
+  }
+
+  if (!process.stdin.isTTY) {
+    console.error('[scraper] Session yo\'q. Serverda TELEGRAM_SESSION env o\'rnating.');
+    console.error('[scraper] Lokalda: node scraper.js → login → session.txt dan nusxa oling');
+    process.exit(1);
   }
 
   console.log('\n[scraper] Telegram akkauntiga kirish kerak');

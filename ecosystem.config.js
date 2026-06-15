@@ -6,6 +6,9 @@ module.exports = {
       autorestart: true,
       max_restarts: 50,
       restart_delay: 5000,
+      env: {
+        NODE_ENV: 'production',
+      },
     },
     {
       name: 'karvon-scraper',
@@ -13,6 +16,10 @@ module.exports = {
       autorestart: true,
       max_restarts: 50,
       restart_delay: 5000,
+      env: {
+        NODE_ENV: 'production',
+        TELEGRAM_USE_WSS: '1',
+      },
     },
   ],
 };

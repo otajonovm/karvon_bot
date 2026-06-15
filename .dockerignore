@@ -1,0 +1,9 @@
+node_modules
+.git
+.env
+karvon.env
+session.txt
+karvon-qr.png
+.karvon-start.lock
+*.log
+.DS_Store

@@ -1,0 +1,49 @@
+# DigitalOcean App Platform — Worker (HTTP kerak emas)
+# Dashboard: Create App → GitHub → otajonovm/karvon_bot → Edit Spec → bu faylni qo'llang
+# YOKI: doctl apps create --spec .do/app.yaml
+
+name: karvon-bot
+region: fra
+
+workers:
+  - name: karvon
+    github:
+      repo: otajonovm/karvon_bot
+      branch: main
+      deploy_on_push: true
+    source_dir: /
+    environment_slug: node-js
+    instance_size_slug: basic-xxs
+    instance_count: 1
+    run_command: npm start
+    envs:
+      - key: NODE_ENV
+        value: production
+        scope: RUN_TIME
+      - key: BOT_TOKEN
+        scope: RUN_TIME
+        type: SECRET
+      - key: API_ID
+        scope: RUN_TIME
+        type: SECRET
+      - key: API_HASH
+        scope: RUN_TIME
+        type: SECRET
+      - key: SUPABASE_URL
+        scope: RUN_TIME
+        type: SECRET
+      - key: SUPABASE_KEY
+        scope: RUN_TIME
+        type: SECRET
+      - key: DEEPSEEK_API_KEY
+        scope: RUN_TIME
+        type: SECRET
+      - key: CARGO_GROUPS
+        scope: RUN_TIME
+        type: SECRET
+      - key: TELEGRAM_SESSION
+        scope: RUN_TIME
+        type: SECRET
+      - key: TELEGRAM_USE_WSS
+        value: "1"
+        scope: RUN_TIME
