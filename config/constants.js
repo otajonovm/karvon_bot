@@ -12,6 +12,11 @@ const ORDER_STATUS = {
   TAKEN: 'taken',
 };
 
+const DRIVER_STATUS = {
+  ACTIVE: 'active',
+  BUSY: 'busy',
+};
+
 /** All directed region pairs (from !== to) for driver route selection */
 const ROUTES = REGIONS.flatMap((from) =>
   REGIONS.filter((to) => to !== from).map((to) => `${from}-${to}`)
@@ -51,6 +56,7 @@ module.exports = {
   CAR_TYPES,
   ROLES,
   ORDER_STATUS,
+  DRIVER_STATUS,
   ROUTES,
   GEMINI_SYSTEM_INSTRUCTION,
   CARGO_GROUPS,

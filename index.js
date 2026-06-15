@@ -10,7 +10,9 @@ const {
   acceptOrder,
 } = require('./lib/notifications');
 const { insertOrder } = require('./lib/orders');
-const { REGIONS, CAR_TYPES, ROLES, ROUTES } = require('./config/constants');
+const { REGIONS, CAR_TYPES, ROLES, ROUTES, DRIVER_STATUS } = require('./config/constants');
+const { BTN_SEEKING, BTN_BUSY, driverStatusKeyboard } = require('./lib/driverUi');
+const { setDriverStatus, getDriverProfile } = require('./lib/drivers');
 
 // ─── Validate env ────────────────────────────────────────────────────────────
 
@@ -254,6 +256,7 @@ bot.action(/^route_(.+)$/, async (ctx) => {
         user_id: userId,
         car_type: session.car_type,
         preferred_route: route,
+        status: DRIVER_STATUS.ACTIVE,
         updated_at: new Date().toISOString(),
       },
       { onConflict: 'user_id' }
@@ -269,9 +272,65 @@ bot.action(/^route_(.+)$/, async (ctx) => {
         `📍 Yo'nalish: ${route}`,
       { parse_mode: 'HTML' }
     );
+
+    await ctx.reply(
+      '🟢 <b>Tayyor!</b> Endi pastdagi tugmalar orqali holatingizni boshqaring.\n\n' +
+        '• <b>Yuk qidiryapman</b> — yangi yuklar keladi\n' +
+        '• <b>Bandman</b> — bildirishnomalar to\'xtaydi',
+      { parse_mode: 'HTML', ...driverStatusKeyboard() }
+    );
   } catch (err) {
     console.error('[route]', err.message);
     await ctx.answerCbQuery('Saqlashda xatolik');
+  }
+});
+
+// ─── Driver availability (Reply Keyboard) ───────────────────────────────────
+
+async function requireDriver(ctx) {
+  const { data: user } = await supabase
+    .from('users')
+    .select('role')
+    .eq('id', ctx.from.id)
+    .single();
+
+  if (!user || user.role !== ROLES.DRIVER) return false;
+
+  const profile = await getDriverProfile(ctx.from.id);
+  if (!profile) {
+    await ctx.reply('Avval /profile orqali mashina va yo\'nalishni tanlang.');
+    return false;
+  }
+  return true;
+}
+
+bot.hears(BTN_SEEKING, async (ctx) => {
+  try {
+    if (!(await requireDriver(ctx))) return;
+
+    await setDriverStatus(ctx.from.id, DRIVER_STATUS.ACTIVE);
+    await ctx.reply(
+      '🟢 <b>Yuk qidiryapman</b>\n\nYangi yuklar bo\'yicha bildirishnomalar yoqildi.',
+      { parse_mode: 'HTML', ...driverStatusKeyboard() }
+    );
+  } catch (err) {
+    console.error('[driver_active]', err.message);
+    await ctx.reply('Holatni saqlashda xatolik. Qayta urinib ko\'ring.');
+  }
+});
+
+bot.hears(BTN_BUSY, async (ctx) => {
+  try {
+    if (!(await requireDriver(ctx))) return;
+
+    await setDriverStatus(ctx.from.id, DRIVER_STATUS.BUSY);
+    await ctx.reply(
+      '🔴 <b>Bandman</b>\n\nYangi yuk bildirishnomalari to\'xtatildi.',
+      { parse_mode: 'HTML', ...driverStatusKeyboard() }
+    );
+  } catch (err) {
+    console.error('[driver_busy]', err.message);
+    await ctx.reply('Holatni saqlashda xatolik. Qayta urinib ko\'ring.');
   }
 });
 
@@ -461,6 +520,48 @@ bot.action('wiz_cancel', async (ctx) => {
 });
 
 // ─── Order acceptance ────────────────────────────────────────────────────────
+
+bot.action(/^contact_order_(.+)$/, async (ctx) => {
+  const orderId = ctx.match[1];
+  const driverId = ctx.from.id;
+
+  try {
+    const { data: user } = await supabase
+      .from('users')
+      .select('role')
+      .eq('id', driverId)
+      .single();
+
+    if (!user || user.role !== ROLES.DRIVER) {
+      return ctx.answerCbQuery('Faqat haydovchilar uchun');
+    }
+
+    const result = await acceptOrder(orderId, driverId);
+
+    if (!result.success) {
+      if (result.reason === 'already_taken') {
+        await ctx.answerCbQuery('Bu yuk allaqachon olingan!');
+      } else {
+        await ctx.answerCbQuery('Buyurtma topilmadi');
+      }
+      return;
+    }
+
+    const order = result.order;
+    const phone = order.phone_number;
+
+    await ctx.answerCbQuery("Telefon yuborildi");
+    await ctx.reply(
+      `📞 <b>Mijoz telefoni:</b> <a href="tel:${phone.replace(/\s/g, '')}">${phone}</a>`,
+      { parse_mode: 'HTML', disable_web_page_preview: true }
+    );
+
+    await markOrderTakenForOthers(ctx.telegram, order, driverId);
+  } catch (err) {
+    console.error('[contact_order]', err.message);
+    await ctx.answerCbQuery('Xatolik yuz berdi');
+  }
+});
 
 bot.action(/^accept_order_(.+)$/, async (ctx) => {
   const orderId = ctx.match[1];
