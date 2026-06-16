@@ -1,5 +1,6 @@
 /**
- * Eski Karvon jarayonlarini to'xtatish (409 conflict oldini oladi).
+ * Eski Karvon jarayonlarini to'xtatish (409 / AUTH_KEY conflict oldini oladi).
+ * To'xtatadi: server.js, index.js, scraper.js, start-all.js, test-groups.js
  */
 const { execSync } = require('child_process');
 const fs = require('fs');
@@ -47,7 +48,7 @@ function killStaleKarvonProcesses() {
     }
   } else {
     try {
-      execSync(`pkill -f "${ROOT}/(index|scraper|start-all)"`, { stdio: 'ignore' });
+      execSync(`pkill -f "${ROOT}/(server|index|scraper|start-all|test-groups)"`, { stdio: 'ignore' });
     } catch {
       /* ignore */
     }

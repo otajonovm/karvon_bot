@@ -92,7 +92,7 @@ pm2 restart all
 
 1. DigitalOcean → **Apps** → **Create App** (yoki mavjud app ni tahrirlang)
 2. **GitHub** → `otajonovm/karvon_bot` → branch `main`
-3. **Component:** faqat **1 ta Web Service** — `http_port: 8080`, `run_command: npm start`
+3. **Component:** faqat **1 ta Web Service** — `http_port: 8080`, **`run_command: node server.js`**
 4. **Worker komponentini o'chiring** (agar bor bo'lsa) — `karvon-scraper` Degraded sababi
 5. **Edit Spec** → `.do/app.yaml` mazmunini qo'llang
 6. **Health check path:** `/health`
@@ -120,6 +120,19 @@ pm2 restart all
 > Health check: `server.js` `PORT` da `/health` ga `200 OK` qaytaradi.
 > **Instance count = 1** (409 va AUTH_KEY conflict bo'lmasin).
 > Lokalda ham cloud bilan bir vaqtda ishlamang: `node scripts/stop-karvon.js`
+
+### App Spec tekshiruvi (muhim)
+
+DO spec da quyidagilar **noto'g'ri** bo'lsa scraper ishlamaydi:
+
+| Muammo | To'g'ri |
+|--------|---------|
+| `run_command: node index.js` | `run_command: node server.js` |
+| Secretlar App-Level **va** Component-Level takrorlangan | Secretlar faqat **App-Level** |
+| `DATABASE_URL` (DO Postgres) | **Kerak emas** — Supabase ishlatiladi, o'chiring |
+| Worker `karvon-scraper` | **O'chirilgan** bo'lishi kerak |
+
+Component `envs` da faqat shular qolsin: `NODE_ENV`, `PORT`, `TELEGRAM_USE_WSS`, `SCRAPER_START_DELAY_SEC`.
 
 ---
 
