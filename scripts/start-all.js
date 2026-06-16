@@ -1,6 +1,6 @@
 /**
  * Bot + Scraper ni bir vaqtda ishga tushiradi.
- * 409 conflict oldini olish uchun avval eski jarayonlar to'xtatiladi.
+ * 409 / AUTH_KEY_DUPLICATED conflict oldini olish uchun ehtiyotkor restart.
  */
 const { spawn } = require('child_process');
 const fs = require('fs');
@@ -15,7 +15,10 @@ require('../config/env');
 const ROOT = path.join(__dirname, '..');
 const LOCK_FILE = path.join(ROOT, '.karvon-start.lock');
 const IS_CLOUD = !!(process.env.DO_APP_ID || process.env.PORT);
+const EXIT_AUTH_DUP = 42;
+
 const procs = new Map();
+const restartTimers = new Map();
 let shuttingDown = false;
 
 function isRunning(pid) {
@@ -62,11 +65,21 @@ function log(msg) {
   console.log(`[karvon] ${msg}`);
 }
 
+function restartDelay(name, code) {
+  if (code === 0) return null;
+  if (name === 'scraper' && code === EXIT_AUTH_DUP) return 120_000;
+  if (name === 'scraper') return 45_000;
+  if (name === 'bot' && code === 1) return 20_000;
+  return 10_000;
+}
+
 function startService(name, script, delayMs = 0) {
-  if (procs.has(name) || shuttingDown) return;
+  if (shuttingDown) return;
 
   const launch = () => {
-    if (procs.has(name) || shuttingDown) return;
+    if (shuttingDown) return;
+    if (procs.has(name)) return;
+
     log(`${name} ishga tushirilmoqda...`);
 
     const child = spawn(process.execPath, [path.join(ROOT, script)], {
@@ -82,15 +95,34 @@ function startService(name, script, delayMs = 0) {
       if (shuttingDown || signal === 'SIGINT' || signal === 'SIGTERM') return;
       if (process.env.KARVON_ENV_INVALID === '1') return;
 
-      const wait = name === 'bot' && code === 1 ? 20_000 : 5_000;
-      log(`${name} to'xtadi (kod: ${code}). ${wait / 1000}s dan keyin qayta ishga tushadi...`);
+      const wait = restartDelay(name, code);
+      if (wait === null) {
+        log(`${name} to'xtadi (kod: 0) — qayta ishga tushirilmaydi.`);
+        return;
+      }
+
+      if (name === 'scraper' && code === EXIT_AUTH_DUP) {
+        log(
+          `${name}: AUTH_KEY_DUPLICATED — session boshqa joyda ochiq. ${wait / 1000}s kutamiz...`
+        );
+      } else {
+        log(`${name} to'xtadi (kod: ${code}). ${wait / 1000}s dan keyin qayta ishga tushadi...`);
+      }
 
       if (name === 'bot' && !IS_CLOUD) {
         killStaleKarvonProcesses();
         deleteWebhook().catch(() => {});
       }
 
-      setTimeout(() => startService(name, script), wait);
+      if (restartTimers.has(name)) {
+        clearTimeout(restartTimers.get(name));
+      }
+
+      const timer = setTimeout(() => {
+        restartTimers.delete(name);
+        startService(name, script);
+      }, wait);
+      restartTimers.set(name, timer);
     });
 
     child.on('error', (err) => {
@@ -106,11 +138,15 @@ function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
   log("To'xtatilmoqda...");
+  for (const timer of restartTimers.values()) {
+    clearTimeout(timer);
+  }
+  restartTimers.clear();
   for (const [, child] of procs) {
     child.kill('SIGTERM');
   }
   releaseLock();
-  setTimeout(() => process.exit(0), 1500);
+  setTimeout(() => process.exit(0), 3000);
 }
 
 async function main() {
@@ -129,6 +165,9 @@ async function main() {
     log('Eski jarayonlar tekshirilmoqda...');
     killStaleKarvonProcesses();
     await new Promise((r) => setTimeout(r, 3000));
+  } else {
+    log('Cloud: eski Telegram session yopilishi uchun 20s kutilmoqda...');
+    await new Promise((r) => setTimeout(r, 20_000));
   }
 
   await deleteWebhook();
@@ -139,9 +178,8 @@ async function main() {
   log('  • Scraper  → guruhlardan yuk olish');
   log('═══════════════════════════════════════\n');
 
-  // Avval scraper, 3 soniyadan keyin bot (409 oldini olish)
   startService('scraper', 'scraper.js');
-  startService('bot', 'index.js', 3000);
+  startService('bot', 'index.js', 5000);
 }
 
 main().catch((err) => {

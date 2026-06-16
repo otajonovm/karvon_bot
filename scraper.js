@@ -256,6 +256,23 @@ async function handleGroupMessage(message, groupLabel) {
 
 // ─── Main ────────────────────────────────────────────────────────────────────
 
+let activeClient = null;
+
+async function shutdownScraper(signal) {
+  console.log(`\n[scraper] ${signal} — Telegram ulanishi yopilmoqda...`);
+  try {
+    if (activeClient?.connected) {
+      await activeClient.disconnect();
+    }
+  } catch {
+    /* ignore */
+  }
+  process.exit(0);
+}
+
+process.once('SIGINT', () => shutdownScraper('SIGINT'));
+process.once('SIGTERM', () => shutdownScraper('SIGTERM'));
+
 async function main() {
   if (CARGO_GROUPS.length === 0) {
     console.error('[scraper] CARGO_GROUPS bo\'sh!');
@@ -266,16 +283,26 @@ async function main() {
 
   const sessionString = loadSession();
   const client = new TelegramClient(new StringSession(sessionString), API_ID, API_HASH, {
-    connectionRetries: Infinity,
-    retryDelay: 3000,
+    connectionRetries: 5,
+    retryDelay: 5000,
     autoReconnect: true,
     useWSS: process.env.TELEGRAM_USE_WSS === '1',
     baseLogger: new Logger('error'),
   });
+  activeClient = client;
 
   console.log('[scraper] Telegramga ulanmoqda...');
 
-  await ensureLoggedIn(client);
+  try {
+    await ensureLoggedIn(client);
+  } catch (err) {
+    if (/AUTH_KEY_DUPLICATED/i.test(err.message)) {
+      const dup = new Error('AUTH_KEY_DUPLICATED');
+      dup.cause = err;
+      throw dup;
+    }
+    throw err;
+  }
 
   const newSession = client.session.save();
   if (newSession && newSession !== sessionString) {
@@ -380,12 +407,24 @@ async function main() {
   }, 60_000);
 }
 
-main().catch((err) => {
-  console.error('[scraper] Fatal:', err.message);
-  process.exit(1);
-});
+main().catch(async (err) => {
+  const isAuthDup = /AUTH_KEY_DUPLICATED/i.test(err.message);
 
-process.once('SIGINT', () => {
-  console.log('\n[scraper] To\'xtatildi.');
-  process.exit(0);
+  try {
+    if (activeClient?.connected) await activeClient.disconnect();
+  } catch {
+    /* ignore */
+  }
+
+  console.error('[scraper] Fatal:', err.message);
+
+  if (isAuthDup) {
+    console.error('[scraper] ❌ Bir xil Telegram session boshqa joyda ochiq!');
+    console.error('[scraper]    1. Lokalda: node scripts/stop-karvon.js');
+    console.error('[scraper]    2. DigitalOcean: Instance count = 1');
+    console.error('[scraper]    3. 2 daqiqa kutib qayta ulanadi...');
+    process.exit(42);
+  }
+
+  process.exit(1);
 });
