@@ -265,9 +265,11 @@ function logConfigHelp(err) {
     return;
   }
   if (msg === 'TELEGRAM_SESSION_INVALID') {
-    console.error('[scraper] ❌ Session eskirgan yoki noto\'g\'ri!');
-    console.error('[scraper]    Lokalda: node scraper.js → qayta login → session.txt yangilang');
-    console.error('[scraper]    DO dagi TELEGRAM_SESSION ni yangi qiymat bilan almashtiring');
+    console.error('[scraper] ❌ Session noto\'g\'ri yoki qisqartirilgan!');
+    console.error('[scraper]    session.txt = 369 belgi. DO da 260 belgi = noto\'g\'ri format.');
+    console.error('[scraper]    TELEGRAM_SESSION_B64 ga session.txt QO\'YMASLIK!');
+    console.error('[scraper]    To\'g\'ri: kalit TELEGRAM_SESSION, qiymat session.txt butun qatori');
+    console.error('[scraper]    yoki: node scripts/print-session-for-do.js → TELEGRAM_SESSION_B64');
   }
 }
 
@@ -355,6 +357,9 @@ async function runScraper() {
   } catch (err) {
     if (/AUTH_KEY_DUPLICATED/i.test(err.message)) {
       throw new Error('AUTH_KEY_DUPLICATED');
+    }
+    if (/not a valid string/i.test(err.message)) {
+      throw new Error('TELEGRAM_SESSION_INVALID');
     }
     throw err;
   }
