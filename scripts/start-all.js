@@ -86,10 +86,13 @@ function startService(name, script, delayMs = 0) {
 
     log(`${name} ishga tushirilmoqda...`);
 
+    const childEnv = { ...process.env, KARVON_CHILD: '1' };
+    delete childEnv.PORT;
+
     const child = spawn(process.execPath, [path.join(ROOT, script)], {
       cwd: ROOT,
       stdio: 'inherit',
-      env: { ...process.env },
+      env: childEnv,
     });
 
     procs.set(name, child);

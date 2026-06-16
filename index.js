@@ -2,7 +2,7 @@ require('./config/env');
 
 console.log('[bot] Karvon index.js yuklanmoqda...');
 
-if (process.env.PORT) {
+if (process.env.PORT && !process.env.KARVON_CHILD) {
   require('./lib/healthServer').startHealthServer();
 }
 
