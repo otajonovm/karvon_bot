@@ -15,15 +15,19 @@ const {
 } = require('./lib/notifications');
 const { insertOrder } = require('./lib/orders');
 const { normalizePhone } = require('./lib/normalize');
-const { REGIONS, CAR_TYPES, ROLES, ROUTES, DRIVER_STATUS } = require('./config/constants');
+const { REGIONS, CAR_TYPES, ROLES, DRIVER_STATUS, DRIVER_CITIES, citySlugToLabel } = require('./config/constants');
 const {
   BTN_POST_CARGO,
   BTN_FIND_CARGO,
   BTN_MY_STATUS,
   BTN_SEEKING,
   BTN_BUSY,
+  BTN_BACK_MAIN,
   MSG_POST_CARGO_SOON,
   mainMenuKeyboard,
+  statusScreenKeyboard,
+  driverCarKeyboard,
+  driverCityKeyboard,
 } = require('./lib/menus');
 const { upsertDriverProfile, setDriverStatus, getDriverProfile } = require('./lib/drivers');
 const { getUserById, upsertUserPhone } = require('./lib/users');
@@ -76,21 +80,6 @@ function regionKeyboard(prefix) {
   return Markup.inlineKeyboard(chunkButtons(REGIONS, prefix));
 }
 
-function carTypeKeyboard(prefix) {
-  return Markup.inlineKeyboard(chunkButtons(CAR_TYPES, prefix, 2));
-}
-
-function routeKeyboard() {
-  const rows = [];
-  for (let i = 0; i < ROUTES.length; i += 2) {
-    rows.push(
-      ROUTES.slice(i, i + 2).map((route) =>
-        Markup.button.callback(route, `route_${route}`)
-      )
-    );
-  }
-  return Markup.inlineKeyboard(rows);
-}
 
 function clearWizard(userId) {
   wizardSessions.delete(userId);
@@ -110,7 +99,7 @@ async function beginDriverProfileFlow(ctx) {
 
   if (!user?.phone) {
     return ctx.reply(
-      "Avval telefon raqamingizni ulashing — /start bosing.",
+      'Avval telefon raqamingizni ulashing — /start bosing.',
       Markup.removeKeyboard()
     );
   }
@@ -118,24 +107,28 @@ async function beginDriverProfileFlow(ctx) {
   await ensureDriverRole(userId);
 
   const existing = await getDriverProfile(userId);
+
   if (existing) {
     const statusLabel =
-      existing.status === DRIVER_STATUS.BUSY ? '🔴 Bandman' : '🟢 Yuk qidiryapman';
+      existing.status === DRIVER_STATUS.BUSY ? "🔴 Yo'ldaman" : '🟢 Yuk qidiryapman';
+
+    profileSessions.set(userId, { step: 'car_type' });
     await ctx.reply(
-      '🚛 <b>Haydovchi profili</b>\n\n' +
-        `Mashina: <b>${existing.truck_type}</b>\n` +
-        `Yo'nalish: <b>${existing.preferred_route}</b>\n` +
-        `Holat: ${statusLabel}\n\n` +
-        'Yangilash uchun mashina turini tanlang:',
-      { parse_mode: 'HTML', ...carTypeKeyboard('profile_car') }
+      '🚛 <b>Profilingiz</b>\n\n' +
+        `Mashina:    <b>${existing.truck_type}</b>\n` +
+        `Yo'nalish:  <b>${existing.preferred_route}</b>\n` +
+        `Holat:      ${statusLabel}\n\n` +
+        '✏️ Yangilash uchun mashina turini tanlang:',
+      { parse_mode: 'HTML', ...driverCarKeyboard() }
     );
     return;
   }
 
   profileSessions.set(userId, { step: 'car_type' });
   await ctx.reply(
-    '🚛 <b>Profil sozlash</b>\n\nMashina turini tanlang:',
-    { parse_mode: 'HTML', ...carTypeKeyboard('profile_car') }
+    '🚛 <b>Profilni sozlaymiz!</b>\n\n' +
+      '1️⃣ Mashina turingizni tanlang:',
+    { parse_mode: 'HTML', ...driverCarKeyboard() }
   );
 }
 
@@ -219,13 +212,17 @@ bot.hears(BTN_FIND_CARGO, async (ctx) => {
 
 bot.hears(BTN_MY_STATUS, async (ctx) => {
   try {
-    const { text, extra } = await buildStatusMessage(ctx.from.id);
-    await ctx.reply(text, extra);
-    await ctx.reply('📋 Bosh menyu', mainMenuKeyboard());
+    const { text, hasProfile } = await buildStatusMessage(ctx.from.id);
+    const keyboard = hasProfile ? statusScreenKeyboard() : mainMenuKeyboard();
+    await ctx.reply(text, { parse_mode: 'HTML', ...keyboard });
   } catch (err) {
     console.error('[my_status]', err.message);
-    await ctx.reply('Holatni yuklab bo\'lmadi.', mainMenuKeyboard());
+    await ctx.reply("Holatni yuklab bo'lmadi.", mainMenuKeyboard());
   }
+});
+
+bot.hears(BTN_BACK_MAIN, async (ctx) => {
+  await sendMainMenu(ctx, '🏠 Asosiy menyu');
 });
 
 // ─── Role selection (eski inline xabarlar uchun) ─────────────────────────────
@@ -274,59 +271,74 @@ bot.command('profile', async (ctx) => {
   }
 });
 
-bot.action(/^profile_car_(.+)$/, async (ctx) => {
-  const carType = ctx.match[1];
+// ─── Driver profile wizard: 1-qadam — mashina turi ──────────────────────────
+
+const CAR_SLUG_MAP = {
+  labo:    'Labo/Damas',
+  gazel:   'Gazel',
+  isuzu:   'Isuzu',
+  fura:    'Fura',
+};
+
+bot.action(/^drv_car_(.+)$/, async (ctx) => {
+  const slug = ctx.match[1];
   const userId = ctx.from.id;
+  const carType = CAR_SLUG_MAP[slug];
 
-  if (!CAR_TYPES.includes(carType)) {
-    return ctx.answerCbQuery('Noto\'g\'ri mashina turi');
-  }
+  if (!carType) return ctx.answerCbQuery('Noto\'g\'ri tanlov');
 
-  profileSessions.set(userId, { step: 'route', car_type: carType });
+  profileSessions.set(userId, { step: 'city', car_type: carType });
 
   await ctx.answerCbQuery();
   await ctx.editMessageText(
-    `✅ Mashina: <b>${carType}</b>\n\nYo'nalishni tanlang:`,
-    { parse_mode: 'HTML', ...routeKeyboard() }
+    '🚛 <b>Profilni sozlaymiz!</b>\n\n' +
+      `✅ Mashina: <b>${carType}</b>\n\n` +
+      "2️⃣ Asosiy yo'nalishingizni tanlang:",
+    { parse_mode: 'HTML', ...driverCityKeyboard() }
   );
 });
 
-bot.action(/^route_(.+)$/, async (ctx) => {
-  const route = ctx.match[1];
+// ─── Driver profile wizard: 2-qadam — shahar (yo'nalish) ─────────────────────
+
+bot.action(/^drv_city_(.+)$/, async (ctx) => {
+  const slug = ctx.match[1];
   const userId = ctx.from.id;
   const session = profileSessions.get(userId);
 
-  if (!session || !session.car_type) {
-    return ctx.answerCbQuery('Avval /profile bosing');
+  if (!session?.car_type) {
+    return ctx.answerCbQuery("Avval mashina turini tanlang");
   }
 
-  if (!ROUTES.includes(route)) {
-    return ctx.answerCbQuery('Noto\'g\'ri yo\'nalish');
-  }
+  const cityLabel = citySlugToLabel(slug);
+  const cityValid = DRIVER_CITIES.some((c) => c.slug === slug);
+
+  if (!cityValid) return ctx.answerCbQuery("Noto'g'ri shahar");
 
   try {
     await upsertDriverProfile(userId, {
       truck_type: session.car_type,
-      preferred_route: route,
+      preferred_route: cityLabel,
       status: DRIVER_STATUS.ACTIVE,
     });
 
     clearProfile(userId);
-    await ctx.answerCbQuery('Profil saqlandi!');
+    await ctx.answerCbQuery('✅ Saqlandi!');
+
     await ctx.editMessageText(
-      `✅ <b>Profil yangilandi!</b>\n\n` +
-        `🚛 Mashina: ${session.car_type}\n` +
-        `📍 Yo'nalish: ${route}`,
+      '✅ <b>Profil tayyor!</b>\n\n' +
+        `🚛 Mashina:    <b>${session.car_type}</b>\n` +
+        `📍 Yo'nalish:  <b>${cityLabel}</b>`,
       { parse_mode: 'HTML' }
     );
 
     await sendMainMenu(
       ctx,
-      '🟢 <b>Tayyor!</b> Yangi yuklar mos kelganda bildirishnoma olasiz.\n' +
-        'Holatingizni 「⚙️ Mening Holatim」 dan boshqaring.'
+      '✅ Rahmat, Akajon! Profilingiz daxshatli aniqlikda yangilandi.\n' +
+        'Endi tizim sizga faqat mos keladigan yuklarni push-bildirishnoma qilib\n' +
+        "shaxsiyingizga yuboradi. Safaringiz bexatar bo'lsin! 🚛"
     );
   } catch (err) {
-    console.error('[route]', err.message);
+    console.error('[drv_city]', err.message);
     await ctx.answerCbQuery('Saqlashda xatolik');
   }
 });
@@ -364,7 +376,7 @@ async function setDriverBusy(ctx) {
   if (!(await requireDriver(ctx))) return;
   await setDriverStatus(ctx.from.id, DRIVER_STATUS.BUSY);
   await ctx.reply(
-    '🔴 <b>Bandman</b>\n\nYangi yuk bildirishnomalari to\'xtatildi.',
+    "🔴 <b>Yo'ldaman</b>\n\nYangi yuk bildirishnomalari to'xtatildi. Yetib borganingizda holatni o'zgartiring.",
     { parse_mode: 'HTML', ...mainMenuKeyboard() }
   );
 }
@@ -483,7 +495,7 @@ bot.action(/^wiz_to_(.+)$/, async (ctx) => {
   await ctx.answerCbQuery();
   await ctx.editMessageText(
     `📍 ${wiz.data.from_region} → <b>${region}</b>\n\nQanday mashina kerak?`,
-    { parse_mode: 'HTML', ...carTypeKeyboard('wiz_car') }
+    { parse_mode: 'HTML', ...Markup.inlineKeyboard(chunkButtons(CAR_TYPES, 'wiz_car', 2)) }
   );
 });
 

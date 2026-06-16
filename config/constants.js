@@ -2,6 +2,30 @@ const REGIONS = ['Toshkent', 'Vodiy', 'Samarqand', 'Buxoro', 'Voha'];
 
 const CAR_TYPES = ['Labo/Damas', 'Gazel', 'Isuzu', 'Fura'];
 
+/** 8 ta asosiy shahar — haydovchi profili uchun */
+const DRIVER_CITIES = [
+  { slug: 'toshkent',  label: 'Toshkent',     region: 'Toshkent' },
+  { slug: 'fargona',   label: "Farg'ona",       region: 'Vodiy'    },
+  { slug: 'andijon',   label: 'Andijon',        region: 'Vodiy'    },
+  { slug: 'namangan',  label: 'Namangan',       region: 'Vodiy'    },
+  { slug: 'samarqand', label: 'Samarqand',      region: 'Samarqand'},
+  { slug: 'buxoro',    label: 'Buxoro',         region: 'Buxoro'   },
+  { slug: 'qashqa',    label: 'Qashqadaryo',   region: 'Voha'     },
+  { slug: 'surxon',    label: 'Surxondaryo',   region: 'Voha'     },
+];
+
+/** Shahar label → REGIONS dagi region nomi */
+function cityLabelToRegion(label) {
+  const found = DRIVER_CITIES.find((c) => c.label === label || c.slug === label);
+  return found?.region ?? label;
+}
+
+/** Slug → display label */
+function citySlugToLabel(slug) {
+  const found = DRIVER_CITIES.find((c) => c.slug === slug);
+  return found?.label ?? slug;
+}
+
 const ROLES = {
   CLIENT: 'role_client',
   DRIVER: 'role_driver',
@@ -54,6 +78,9 @@ const CARGO_GROUPS = loadCargoGroups();
 module.exports = {
   REGIONS,
   CAR_TYPES,
+  DRIVER_CITIES,
+  cityLabelToRegion,
+  citySlugToLabel,
   ROLES,
   ORDER_STATUS,
   DRIVER_STATUS,
