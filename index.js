@@ -12,8 +12,18 @@ const {
 const { insertOrder } = require('./lib/orders');
 const { normalizePhone } = require('./lib/normalize');
 const { REGIONS, CAR_TYPES, ROLES, ROUTES, DRIVER_STATUS } = require('./config/constants');
-const { BTN_SEEKING, BTN_BUSY, driverStatusKeyboard } = require('./lib/driverUi');
-const { setDriverStatus, getDriverProfile } = require('./lib/drivers');
+const {
+  BTN_POST_CARGO,
+  BTN_FIND_CARGO,
+  BTN_MY_STATUS,
+  BTN_SEEKING,
+  BTN_BUSY,
+  MSG_POST_CARGO_SOON,
+  mainMenuKeyboard,
+} = require('./lib/menus');
+const { upsertDriverProfile, setDriverStatus, getDriverProfile } = require('./lib/drivers');
+const { getUserById, upsertUserPhone } = require('./lib/users');
+const { buildStatusMessage, ensureDriverRole } = require('./lib/statusPanel');
 
 // ─── Validate env ────────────────────────────────────────────────────────────
 
@@ -84,13 +94,62 @@ function clearProfile(userId) {
   profileSessions.delete(userId);
 }
 
+async function sendMainMenu(ctx, text) {
+  await ctx.reply(text, { parse_mode: 'HTML', ...mainMenuKeyboard() });
+}
+
+async function beginDriverProfileFlow(ctx) {
+  const userId = ctx.from.id;
+  const user = await getUserById(userId);
+
+  if (!user?.phone) {
+    return ctx.reply(
+      "Avval telefon raqamingizni ulashing — /start bosing.",
+      Markup.removeKeyboard()
+    );
+  }
+
+  await ensureDriverRole(userId);
+
+  const existing = await getDriverProfile(userId);
+  if (existing) {
+    const statusLabel =
+      existing.status === DRIVER_STATUS.BUSY ? '🔴 Bandman' : '🟢 Yuk qidiryapman';
+    await ctx.reply(
+      '🚛 <b>Haydovchi profili</b>\n\n' +
+        `Mashina: <b>${existing.truck_type}</b>\n` +
+        `Yo'nalish: <b>${existing.preferred_route}</b>\n` +
+        `Holat: ${statusLabel}\n\n` +
+        'Yangilash uchun mashina turini tanlang:',
+      { parse_mode: 'HTML', ...carTypeKeyboard('profile_car') }
+    );
+    return;
+  }
+
+  profileSessions.set(userId, { step: 'car_type' });
+  await ctx.reply(
+    '🚛 <b>Profil sozlash</b>\n\nMashina turini tanlang:',
+    { parse_mode: 'HTML', ...carTypeKeyboard('profile_car') }
+  );
+}
+
 // ─── /start ──────────────────────────────────────────────────────────────────
 
 bot.start(async (ctx) => {
   try {
+    const user = await getUserById(ctx.from.id);
+
+    if (user?.phone) {
+      return sendMainMenu(
+        ctx,
+        '👋 <b>Karvonga xush kelibsiz!</b>\n\n' +
+          'Yuk joylashtirish, izlash va holatingizni boshqarish uchun pastdagi menyudan foydalaning.'
+      );
+    }
+
     await ctx.reply(
       "👋 <b>Karvon</b>ga xush kelibsiz!\n\n" +
-        "Davom etish uchun telefon raqamingizni yuboring.",
+        'Davom etish uchun telefon raqamingizni yuboring.',
       {
         parse_mode: 'HTML',
         ...Markup.keyboard([
@@ -119,31 +178,13 @@ bot.on('contact', async (ctx) => {
   const userId = ctx.from.id;
 
   try {
-    const { error } = await supabase.from('users').upsert(
-      {
-        id: userId,
-        phone,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'id' }
+    await upsertUserPhone(userId, phone);
+
+    await ctx.reply('✅ Raqamingiz saqlandi!', Markup.removeKeyboard());
+    await sendMainMenu(
+      ctx,
+      '🎉 <b>Ro\'yxatdan o\'tdingiz!</b>\n\nKerakli bo\'limni tanlang:'
     );
-
-    if (error) throw error;
-
-    await ctx.reply(
-      '✅ Raqamingiz saqlandi!\n\nRolingizni tanlang:',
-      {
-        parse_mode: 'HTML',
-        ...Markup.inlineKeyboard([
-          [
-            Markup.button.callback('📦 Men Yuk Egasiman', 'role_client'),
-            Markup.button.callback('🚛 Men Haydovchiman', 'role_driver'),
-          ],
-        ]),
-      }
-    );
-
-    await ctx.reply('Menyuni ochish uchun tugmani bosing.', Markup.removeKeyboard());
   } catch (err) {
     console.error('[contact]', err.message);
     const rls = /row-level security/i.test(err.message);
@@ -155,7 +196,33 @@ bot.on('contact', async (ctx) => {
   }
 });
 
-// ─── Role selection ───────────────────────────────────────────────────────────
+// ─── Asosiy menyu (Reply Keyboard) ───────────────────────────────────────────
+
+bot.hears(BTN_POST_CARGO, async (ctx) => {
+  await ctx.reply(MSG_POST_CARGO_SOON, { parse_mode: 'HTML', ...mainMenuKeyboard() });
+});
+
+bot.hears(BTN_FIND_CARGO, async (ctx) => {
+  try {
+    await beginDriverProfileFlow(ctx);
+  } catch (err) {
+    console.error('[find_cargo]', err.message);
+    await ctx.reply('Xatolik yuz berdi. Qayta urinib ko\'ring.', mainMenuKeyboard());
+  }
+});
+
+bot.hears(BTN_MY_STATUS, async (ctx) => {
+  try {
+    const { text, extra } = await buildStatusMessage(ctx.from.id);
+    await ctx.reply(text, extra);
+    await ctx.reply('📋 Bosh menyu', mainMenuKeyboard());
+  } catch (err) {
+    console.error('[my_status]', err.message);
+    await ctx.reply('Holatni yuklab bo\'lmadi.', mainMenuKeyboard());
+  }
+});
+
+// ─── Role selection (eski inline xabarlar uchun) ─────────────────────────────
 
 bot.action(/^role_(client|driver)$/, async (ctx) => {
   const role = ctx.match[1] === 'client' ? ROLES.CLIENT : ROLES.DRIVER;
@@ -174,14 +241,15 @@ bot.action(/^role_(client|driver)$/, async (ctx) => {
     if (role === ROLES.DRIVER) {
       await ctx.editMessageText(
         '🚛 Siz haydovchi sifatida ro\'yxatdan o\'tdingiz!\n\n' +
-          'Profil sozlash: /profile\n' +
-          'Yangi yuklar avtomatik keladi.'
+          '「🚛 Yuk Izlash / Profilni Sozlash」 tugmasini bosing.'
       );
+      await sendMainMenu(ctx, 'Asosiy menyu:');
     } else {
       await ctx.editMessageText(
         '📦 Siz yuk egasi sifatida ro\'yxatdan o\'tdingiz!\n\n' +
           'Yangi buyurtma: /neworder'
       );
+      await sendMainMenu(ctx, 'Asosiy menyu:');
     }
   } catch (err) {
     console.error('[role]', err.message);
@@ -192,43 +260,8 @@ bot.action(/^role_(client|driver)$/, async (ctx) => {
 // ─── /profile (driver) ───────────────────────────────────────────────────────
 
 bot.command('profile', async (ctx) => {
-  const userId = ctx.from.id;
-
   try {
-    const { data: user, error } = await supabase
-      .from('users')
-      .select('role')
-      .eq('id', userId)
-      .single();
-
-    if (error || !user) {
-      return ctx.reply('Avval /start orqali ro\'yxatdan o\'ting.');
-    }
-
-    if (user.role !== ROLES.DRIVER) {
-      return ctx.reply('Bu buyruq faqat haydovchilar uchun.');
-    }
-
-    const existing = await getDriverProfile(userId);
-    if (existing) {
-      const statusLabel =
-        existing.status === DRIVER_STATUS.BUSY ? '🔴 Bandman' : '🟢 Yuk qidiryapman';
-      return ctx.reply(
-        `🚛 <b>Profilingiz</b>\n\n` +
-          `Mashina: <b>${existing.car_type}</b>\n` +
-          `Yo'nalish: <b>${existing.preferred_route}</b>\n` +
-          `Holat: ${statusLabel}\n\n` +
-          'Yangilash uchun mashina turini tanlang:',
-        { parse_mode: 'HTML', ...carTypeKeyboard('profile_car') }
-      );
-    }
-
-    profileSessions.set(userId, { step: 'car_type' });
-
-    await ctx.reply(
-      '🚛 <b>Profil sozlash</b>\n\nMashina turini tanlang:',
-      { parse_mode: 'HTML', ...carTypeKeyboard('profile_car') }
-    );
+    await beginDriverProfileFlow(ctx);
   } catch (err) {
     console.error('[profile]', err.message);
     await ctx.reply('Xatolik yuz berdi.');
@@ -266,18 +299,11 @@ bot.action(/^route_(.+)$/, async (ctx) => {
   }
 
   try {
-    const { error } = await supabase.from('drivers').upsert(
-      {
-        user_id: userId,
-        car_type: session.car_type,
-        preferred_route: route,
-        status: DRIVER_STATUS.ACTIVE,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'user_id' }
-    );
-
-    if (error) throw error;
+    await upsertDriverProfile(userId, {
+      truck_type: session.car_type,
+      preferred_route: route,
+      status: DRIVER_STATUS.ACTIVE,
+    });
 
     clearProfile(userId);
     await ctx.answerCbQuery('Profil saqlandi!');
@@ -288,11 +314,10 @@ bot.action(/^route_(.+)$/, async (ctx) => {
       { parse_mode: 'HTML' }
     );
 
-    await ctx.reply(
-      '🟢 <b>Tayyor!</b> Endi pastdagi tugmalar orqali holatingizni boshqaring.\n\n' +
-        '• <b>Yuk qidiryapman</b> — yangi yuklar keladi\n' +
-        '• <b>Bandman</b> — bildirishnomalar to\'xtaydi',
-      { parse_mode: 'HTML', ...driverStatusKeyboard() }
+    await sendMainMenu(
+      ctx,
+      '🟢 <b>Tayyor!</b> Yangi yuklar mos kelganda bildirishnoma olasiz.\n' +
+        'Holatingizni 「⚙️ Mening Holatim」 dan boshqaring.'
     );
   } catch (err) {
     console.error('[route]', err.message);
@@ -303,31 +328,64 @@ bot.action(/^route_(.+)$/, async (ctx) => {
 // ─── Driver availability (Reply Keyboard) ───────────────────────────────────
 
 async function requireDriver(ctx) {
-  const { data: user } = await supabase
-    .from('users')
-    .select('role')
-    .eq('id', ctx.from.id)
-    .single();
-
-  if (!user || user.role !== ROLES.DRIVER) return false;
+  const user = await getUserById(ctx.from.id);
+  if (!user?.phone) {
+    await ctx.reply('Avval /start orqali telefon raqamingizni ulashing.');
+    return false;
+  }
 
   const profile = await getDriverProfile(ctx.from.id);
   if (!profile) {
-    await ctx.reply('Avval /profile orqali mashina va yo\'nalishni tanlang.');
+    await ctx.reply(
+      'Avval haydovchi profilini sozlang — 「🚛 Yuk Izlash / Profilni Sozlash」 tugmasini bosing.',
+      mainMenuKeyboard()
+    );
     return false;
   }
   return true;
 }
 
+async function setDriverActive(ctx) {
+  if (!(await requireDriver(ctx))) return;
+  await setDriverStatus(ctx.from.id, DRIVER_STATUS.ACTIVE);
+  await ctx.reply(
+    '🟢 <b>Yuk qidiryapman</b>\n\nYangi yuklar bo\'yicha bildirishnomalar yoqildi.',
+    { parse_mode: 'HTML', ...mainMenuKeyboard() }
+  );
+}
+
+async function setDriverBusy(ctx) {
+  if (!(await requireDriver(ctx))) return;
+  await setDriverStatus(ctx.from.id, DRIVER_STATUS.BUSY);
+  await ctx.reply(
+    '🔴 <b>Bandman</b>\n\nYangi yuk bildirishnomalari to\'xtatildi.',
+    { parse_mode: 'HTML', ...mainMenuKeyboard() }
+  );
+}
+
+bot.action('driver_set_active', async (ctx) => {
+  try {
+    await ctx.answerCbQuery();
+    await setDriverActive(ctx);
+  } catch (err) {
+    console.error('[driver_set_active]', err.message);
+    await ctx.answerCbQuery('Xatolik');
+  }
+});
+
+bot.action('driver_set_busy', async (ctx) => {
+  try {
+    await ctx.answerCbQuery();
+    await setDriverBusy(ctx);
+  } catch (err) {
+    console.error('[driver_set_busy]', err.message);
+    await ctx.answerCbQuery('Xatolik');
+  }
+});
+
 bot.hears(BTN_SEEKING, async (ctx) => {
   try {
-    if (!(await requireDriver(ctx))) return;
-
-    await setDriverStatus(ctx.from.id, DRIVER_STATUS.ACTIVE);
-    await ctx.reply(
-      '🟢 <b>Yuk qidiryapman</b>\n\nYangi yuklar bo\'yicha bildirishnomalar yoqildi.',
-      { parse_mode: 'HTML', ...driverStatusKeyboard() }
-    );
+    await setDriverActive(ctx);
   } catch (err) {
     console.error('[driver_active]', err.message);
     await ctx.reply('Holatni saqlashda xatolik. Qayta urinib ko\'ring.');
@@ -336,13 +394,7 @@ bot.hears(BTN_SEEKING, async (ctx) => {
 
 bot.hears(BTN_BUSY, async (ctx) => {
   try {
-    if (!(await requireDriver(ctx))) return;
-
-    await setDriverStatus(ctx.from.id, DRIVER_STATUS.BUSY);
-    await ctx.reply(
-      '🔴 <b>Bandman</b>\n\nYangi yuk bildirishnomalari to\'xtatildi.',
-      { parse_mode: 'HTML', ...driverStatusKeyboard() }
-    );
+    await setDriverBusy(ctx);
   } catch (err) {
     console.error('[driver_busy]', err.message);
     await ctx.reply('Holatni saqlashda xatolik. Qayta urinib ko\'ring.');
@@ -567,7 +619,7 @@ bot.action(/^contact_order_(.+)$/, async (ctx) => {
     await ctx.answerCbQuery('📞 Telefon');
     await ctx.reply(
       `📞 <b>Qo'ng'iroq qiling:</b>\n<a href="tel:${tel}">${phone}</a>`,
-      { parse_mode: 'HTML', ...driverStatusKeyboard() }
+      { parse_mode: 'HTML', ...mainMenuKeyboard() }
     );
 
     if (order.status === 'active') {
