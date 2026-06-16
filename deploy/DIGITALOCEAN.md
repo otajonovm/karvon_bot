@@ -93,7 +93,9 @@ pm2 restart all
 3. **Component turi: Web Service** (Worker emas!) — `http_port: 8080`
 4. **Edit Spec** → `.do/app.yaml` mazmunini qo'llang
 5. **Health check path:** `/health`
-5. **Environment Variables** — **App-Level** da barchasini qo'shing (Encrypt):
+5. **Environment Variables** — faqat **App-Level** da qo'shing (Encrypt). Component-level da emas!
+
+   Apps → Settings → **App-Level Environment Variables** → Edit
 
 | Key | Qayerdan |
 |-----|----------|
@@ -104,13 +106,11 @@ pm2 restart all
 | `SUPABASE_KEY` | Supabase → anon/service key |
 | `DEEPSEEK_API_KEY` | platform.deepseek.com |
 | `CARGO_GROUPS` | `-1002468475563,-1002956624079,-1002182000321` |
-| `TELEGRAM_SESSION` | Lokal `session.txt` dan nusxa |
-| `TELEGRAM_USE_WSS` | `1` |
-| `NODE_ENV` | `production` |
-| `PORT` | `8080` |
+| `TELEGRAM_SESSION` | Lokal `session.txt` dan nusxa (scraper uchun) |
 
-> **Muhim:** Har bir o'zgaruvchini yozib **Save** bosing, keyin **Actions → Deploy** qiling.
-> Logda `Missing required env variable` ko'rsa — o'sha kalit DO da yo'q.
+> **Muhim:** `.do/app.yaml` da SECRET kalitlarni yozmang — bo'sh component override app-level ni o'chiradi va `Missing BOT_TOKEN` chiqadi.
+> Har birini yozib **Save** bosing, keyin **Actions → Deploy**.
+> `NODE_ENV`, `PORT`, `TELEGRAM_USE_WSS` yaml da — qayta kiritish shart emas.
 
 5. **Deploy**
 

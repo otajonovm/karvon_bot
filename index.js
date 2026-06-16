@@ -31,12 +31,14 @@ const { buildStatusMessage, ensureDriverRole } = require('./lib/statusPanel');
 
 // ─── Validate env ────────────────────────────────────────────────────────────
 
-const required = ['BOT_TOKEN', 'SUPABASE_URL', 'SUPABASE_KEY'];
-for (const key of required) {
-  if (!process.env[key]) {
+const { validateEnv, printEnvHelp } = require('./lib/validateEnv');
+const missing = validateEnv();
+if (missing.length) {
+  for (const key of missing) {
     console.error(`Missing required env variable: ${key}`);
-    process.exit(1);
   }
+  printEnvHelp(missing);
+  process.exit(1);
 }
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
