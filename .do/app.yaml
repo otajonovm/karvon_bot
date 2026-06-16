@@ -1,61 +1,39 @@
-# DigitalOcean — Bot (HTTP) va Scraper (alohida worker)
-#
-# SECRET lar (BOT_TOKEN, API_ID, ...) faqat DO dashboard da — App-Level Environment Variables.
-# Bu faylda SECRET kalitlarni yozmang: bo'sh component-level override app-level ni o'chiradi!
-#
-# Settings → App-Level Environment Variables → Encrypt → Save → Deploy
-
-name: karvon-bot
-region: fra
-
-services:
-  - name: karvon-bot
-    github:
-      repo: otajonovm/karvon_bot
-      branch: main
-      deploy_on_push: true
-    source_dir: /
-    environment_slug: node-js
-    instance_size_slug: basic-xxs
-    instance_count: 1
-    http_port: 8080
-    run_command: node index.js
-    health_check:
-      initial_delay_seconds: 30
-      period_seconds: 10
-      timeout_seconds: 5
-      success_threshold: 1
-      failure_threshold: 5
-      http_path: /health
-    envs:
-      - key: NODE_ENV
-        value: production
-        scope: RUN_TIME
-      - key: PORT
-        value: "8080"
-        scope: RUN_TIME
-      - key: TELEGRAM_USE_WSS
-        value: "1"
-        scope: RUN_TIME
-
-workers:
-  - name: karvon-scraper
-    github:
-      repo: otajonovm/karvon_bot
-      branch: main
-      deploy_on_push: true
-    source_dir: /
-    environment_slug: node-js
-    instance_size_slug: basic-xxs
-    instance_count: 1
-    run_command: node scraper.js
-    envs:
-      - key: NODE_ENV
-        value: production
-        scope: RUN_TIME
-      - key: TELEGRAM_USE_WSS
-        value: "1"
-        scope: RUN_TIME
-      - key: SCRAPER_START_DELAY_SEC
-        value: "90"
-        scope: RUN_TIME
+# DigitalOcean — bitta Web Service (bot + scraper parallel, server.js)
+# SECRET lar faqat App-Level Environment Variables da (dashboard).
+# Settings → App-Level Environment Variables → Encrypt → Save → Deploy
+
+name: karvon-bot
+region: fra
+
+services:
+  - name: karvon-bot
+    github:
+      repo: otajonovm/karvon_bot
+      branch: main
+      deploy_on_push: true
+    source_dir: /
+    environment_slug: node-js
+    instance_size_slug: basic-xxs
+    instance_count: 1
+    http_port: 8080
+    run_command: npm start
+    health_check:
+      initial_delay_seconds: 45
+      period_seconds: 10
+      timeout_seconds: 5
+      success_threshold: 1
+      failure_threshold: 5
+      http_path: /health
+    envs:
+      - key: NODE_ENV
+        value: production
+        scope: RUN_TIME
+      - key: PORT
+        value: "8080"
+        scope: RUN_TIME
+      - key: TELEGRAM_USE_WSS
+        value: "1"
+        scope: RUN_TIME
+      - key: SCRAPER_START_DELAY_SEC
+        value: "20"
+        scope: RUN_TIME

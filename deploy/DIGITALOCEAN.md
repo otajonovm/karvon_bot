@@ -88,12 +88,15 @@ pm2 restart all
 
 ## 2-usul: App Platform — GitHub dan avto-deploy
 
+**Arxitektura:** bitta Web Service (`server.js`) — bot va scraper parallel, alohida Worker kerak emas.
+
 1. DigitalOcean → **Apps** → **Create App** (yoki mavjud app ni tahrirlang)
 2. **GitHub** → `otajonovm/karvon_bot` → branch `main`
-3. **Component turi: Web Service** (Worker emas!) — `http_port: 8080`
-4. **Edit Spec** → `.do/app.yaml` mazmunini qo'llang
-5. **Health check path:** `/health`
-5. **Environment Variables** — faqat **App-Level** da qo'shing (Encrypt). Component-level da emas!
+3. **Component:** faqat **1 ta Web Service** — `http_port: 8080`, `run_command: npm start`
+4. **Worker komponentini o'chiring** (agar bor bo'lsa) — `karvon-scraper` Degraded sababi
+5. **Edit Spec** → `.do/app.yaml` mazmunini qo'llang
+6. **Health check path:** `/health`
+7. **Environment Variables** — faqat **App-Level** da qo'shing (Encrypt):
 
    Apps → Settings → **App-Level Environment Variables** → Edit
 
@@ -114,8 +117,9 @@ pm2 restart all
 
 5. **Deploy**
 
-> Health check: `npm start` `PORT` da `/health` ga `200 OK` qaytaradi.
-> App Platform da faqat **1 nusxa** ishlating (409 conflict bo'lmasin).
+> Health check: `server.js` `PORT` da `/health` ga `200 OK` qaytaradi.
+> **Instance count = 1** (409 va AUTH_KEY conflict bo'lmasin).
+> Lokalda ham cloud bilan bir vaqtda ishlamang: `node scripts/stop-karvon.js`
 
 ---
 

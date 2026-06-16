@@ -10,4 +10,4 @@ COPY . .
 ENV PORT=8080
 EXPOSE 8080
 
-CMD ["node", "scripts/start-all.js"]
+CMD ["npm", "start"]

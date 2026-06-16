@@ -101,9 +101,7 @@ async function ensureLoggedIn(client) {
   }
 
   if (!process.stdin.isTTY) {
-    console.error('[scraper] Session yo\'q. Serverda TELEGRAM_SESSION env o\'rnating.');
-    console.error('[scraper] Lokalda: node scraper.js → login → session.txt dan nusxa oling');
-    process.exit(1);
+    throw new Error('TELEGRAM_SESSION_REQUIRED');
   }
 
   console.log('\n[scraper] Telegram akkauntiga kirish kerak');
@@ -257,9 +255,14 @@ async function handleGroupMessage(message, groupLabel) {
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 let activeClient = null;
+let loopActive = false;
+let firstCloudDelayDone = false;
 
-async function shutdownScraper(signal) {
-  console.log(`\n[scraper] ${signal} — Telegram ulanishi yopilmoqda...`);
+function stopScraperLoop() {
+  loopActive = false;
+}
+
+async function disconnectActiveClient() {
   try {
     if (activeClient?.connected) {
       await activeClient.disconnect();
@@ -267,29 +270,72 @@ async function shutdownScraper(signal) {
   } catch {
     /* ignore */
   }
-  process.exit(0);
+  activeClient = null;
 }
 
-process.once('SIGINT', () => shutdownScraper('SIGINT'));
-process.once('SIGTERM', () => shutdownScraper('SIGTERM'));
+function reconnectDelay(err, attempt) {
+  const msg = err?.message || '';
+  if (/AUTH_KEY_DUPLICATED/i.test(msg)) {
+    return Math.min(120_000 * attempt, 600_000);
+  }
+  if (/TIMEOUT|ETIMEDOUT|ECONNRESET|Not connected|connection closed/i.test(msg)) {
+    return Math.min(30_000 * attempt, 180_000);
+  }
+  if (/NO_GROUPS_CONNECTED|CARGO_GROUPS_EMPTY|TELEGRAM_SESSION_REQUIRED/i.test(msg)) {
+    return Math.min(60_000 * attempt, 300_000);
+  }
+  return Math.min(45_000 * attempt, 300_000);
+}
 
-async function main() {
-  if (process.env.DO_APP_ID) {
-    const sec = parseInt(process.env.SCRAPER_START_DELAY_SEC || '90', 10);
-    console.log(`[scraper] Cloud: ${sec}s kutilmoqda (session conflict oldini olish)...`);
+async function shutdownScraper(signal) {
+  console.log(`\n[scraper] ${signal} — Telegram ulanishi yopilmoqda...`);
+  stopScraperLoop();
+  await disconnectActiveClient();
+  if (!process.env.KARVON_COMBINED) {
+    process.exit(0);
+  }
+}
+
+if (!process.env.KARVON_COMBINED) {
+  process.once('SIGINT', () => shutdownScraper('SIGINT'));
+  process.once('SIGTERM', () => shutdownScraper('SIGTERM'));
+}
+
+async function watchConnection(client) {
+  return new Promise((resolve, reject) => {
+    const timer = setInterval(() => {
+      if (!loopActive) {
+        clearInterval(timer);
+        resolve();
+        return;
+      }
+      if (!client.connected) {
+        clearInterval(timer);
+        reject(new Error('Telegram disconnected'));
+      }
+    }, 15_000);
+  });
+}
+
+async function runScraper() {
+  if (process.env.DO_APP_ID && !firstCloudDelayDone) {
+    const sec = parseInt(process.env.SCRAPER_START_DELAY_SEC || '20', 10);
+    console.log(`[scraper] Cloud: ${sec}s kutilmoqda...`);
     await new Promise((r) => setTimeout(r, sec * 1000));
+    firstCloudDelayDone = true;
   }
 
   if (CARGO_GROUPS.length === 0) {
-    console.error('[scraper] CARGO_GROUPS bo\'sh!');
-    console.error('  karvon.env ga qo\'shing: CARGO_GROUPS=@guruh1,@guruh2');
-    console.error('  yoki config/constants.js ichiga yozing');
-    process.exit(1);
+    throw new Error('CARGO_GROUPS_EMPTY');
   }
 
   const sessionString = loadSession();
+  if (!sessionString && !process.stdin.isTTY) {
+    throw new Error('TELEGRAM_SESSION_REQUIRED');
+  }
+
   const client = new TelegramClient(new StringSession(sessionString), API_ID, API_HASH, {
-    connectionRetries: 5,
+    connectionRetries: 10,
     retryDelay: 5000,
     autoReconnect: true,
     useWSS: process.env.TELEGRAM_USE_WSS === '1',
@@ -303,9 +349,7 @@ async function main() {
     await ensureLoggedIn(client);
   } catch (err) {
     if (/AUTH_KEY_DUPLICATED/i.test(err.message)) {
-      const dup = new Error('AUTH_KEY_DUPLICATED');
-      dup.cause = err;
-      throw dup;
+      throw new Error('AUTH_KEY_DUPLICATED');
     }
     throw err;
   }
@@ -342,11 +386,10 @@ async function main() {
   }
 
   if (allowedIds.size === 0) {
-    console.error('[scraper] Hech qanday guruh ulanmadi. A\'zolik va username/ID ni tekshiring.');
-    process.exit(1);
+    throw new Error('NO_GROUPS_CONNECTED');
   }
 
-  console.log(`[scraper] ${CARGO_GROUPS.length} ta guruh kuzatilmoqda. Ctrl+C — to'xtatish.`);
+  console.log(`[scraper] ${CARGO_GROUPS.length} ta guruh kuzatilmoqda.`);
 
   client.addEventHandler(async (event) => {
     try {
@@ -368,8 +411,8 @@ async function main() {
     }
   }, new NewMessage({}));
 
-  // Zaxira poll: har 60 soniyada faqat YANGI xabarlar (token tejash)
-  setInterval(async () => {
+  const pollTimer = setInterval(async () => {
+    if (!loopActive || !client.connected) return;
     for (const { entity, label } of groupEntities) {
       try {
         const minId = lastSeenId.get(label) || 0;
@@ -384,7 +427,13 @@ async function main() {
     }
   }, 60_000);
 
-  // Bir martalik backfill (ixtiyoriy: SCRAPER_BACKFILL=1)
+  const statsTimer = setInterval(() => {
+    if (!loopActive) return;
+    console.log(`[scraper] 📊 Jon: OK | qayta ishlangan: ${liveStats.processed} ta (60 soniya)`);
+    liveStats.processed = 0;
+    logAiStats();
+  }, 60_000);
+
   if (process.env.SCRAPER_BACKFILL === '1') {
     console.log('\n[scraper] Oxirgi 15 ta xabar tekshirilmoqda (SCRAPER_BACKFILL=1)...');
     for (const { entity, label } of groupEntities) {
@@ -406,31 +455,49 @@ async function main() {
 
   console.log('[scraper] Doimiy kuzatuv aktiv (event + 60s poll zaxira)\n');
 
-  setInterval(() => {
-    console.log(`[scraper] 📊 Jon: OK | qayta ishlangan: ${liveStats.processed} ta (60 soniya)`);
-    liveStats.processed = 0;
-    logAiStats();
-  }, 60_000);
+  try {
+    await watchConnection(client);
+  } finally {
+    clearInterval(pollTimer);
+    clearInterval(statsTimer);
+  }
 }
 
-main().catch(async (err) => {
-  const isAuthDup = /AUTH_KEY_DUPLICATED/i.test(err.message);
+async function startScraperLoop() {
+  loopActive = true;
+  let attempt = 0;
 
-  try {
-    if (activeClient?.connected) await activeClient.disconnect();
-  } catch {
-    /* ignore */
+  while (loopActive) {
+    try {
+      await runScraper();
+      if (!loopActive) break;
+      attempt += 1;
+      console.log('[scraper] Ulanish uzildi, qayta ulanmoqda...');
+      await disconnectActiveClient();
+      await new Promise((r) => setTimeout(r, reconnectDelay(new Error('disconnected'), attempt)));
+    } catch (err) {
+      if (!loopActive) break;
+      attempt += 1;
+      const delay = reconnectDelay(err, attempt);
+      const isAuthDup = /AUTH_KEY_DUPLICATED/i.test(err.message);
+
+      console.error('[scraper] Xato:', err.message);
+      if (isAuthDup) {
+        console.error('[scraper] ❌ Session boshqa joyda ochiq — lokal scraper to\'xtating, 2 daqiqa kuting');
+      }
+      console.error(`[scraper] ${Math.round(delay / 1000)}s dan keyin qayta ulanadi (urinish ${attempt})...`);
+
+      await disconnectActiveClient();
+      await new Promise((r) => setTimeout(r, delay));
+    }
   }
+}
 
-  console.error('[scraper] Fatal:', err.message);
+if (require.main === module) {
+  startScraperLoop().catch((err) => {
+    console.error('[scraper] Fatal:', err.message);
+    process.exit(1);
+  });
+}
 
-  if (isAuthDup) {
-    console.error('[scraper] ❌ Bir xil Telegram session boshqa joyda ochiq!');
-    console.error('[scraper]    1. Lokalda: node scripts/stop-karvon.js');
-    console.error('[scraper]    2. DigitalOcean: Instance count = 1');
-    console.error('[scraper]    3. 2 daqiqa kutib qayta ulanadi...');
-    process.exit(42);
-  }
-
-  process.exit(1);
-});
+module.exports = { startScraperLoop, stopScraperLoop, runScraper };
