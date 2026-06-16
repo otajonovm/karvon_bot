@@ -439,7 +439,10 @@ async function runScraper() {
 
   const statsTimer = setInterval(() => {
     if (!loopActive) return;
-    console.log(`[scraper] 📊 Jon: OK | qayta ishlangan: ${liveStats.processed} ta (60 soniya)`);
+    const rssMb = Math.round(process.memoryUsage().rss / 1024 / 1024);
+    console.log(
+      `[scraper] 📊 Jon: OK | qayta ishlangan: ${liveStats.processed} ta | RAM: ${rssMb}MB (60 soniya)`
+    );
     liveStats.processed = 0;
     logAiStats();
   }, 60_000);
