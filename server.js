@@ -43,6 +43,7 @@ process.env.KARVON_COMBINED = '1';
 
 require('./index.js');
 
+console.log('[karvon] Scraper qismi ishga tushirilmoqda (bot bilan bir processda)...');
 startScraperLoop().catch((err) => {
   console.error('[karvon] Scraper loop xatosi:', err.message);
 });
