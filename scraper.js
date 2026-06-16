@@ -36,7 +36,6 @@ if (!process.env.GEMINI_API_KEY && !process.env.DEEPSEEK_API_KEY) {
 
 const API_ID = parseInt(process.env.API_ID, 10);
 const API_HASH = process.env.API_HASH;
-const SESSION_FILE = path.join(__dirname, 'session.txt');
 const QR_FILE = path.join(__dirname, 'karvon-qr.png');
 
 // Telegraf ishlatilmaydi — faqat HTTP API (bot index.js da polling qiladi)
@@ -57,28 +56,7 @@ const liveStats = { processed: 0 };
 
 // ─── Session ─────────────────────────────────────────────────────────────────
 
-function loadSession() {
-  if (process.env.TELEGRAM_SESSION?.trim()) {
-    return process.env.TELEGRAM_SESSION.trim();
-  }
-  try {
-    if (fs.existsSync(SESSION_FILE)) {
-      return fs.readFileSync(SESSION_FILE, 'utf8').trim();
-    }
-  } catch (err) {
-    console.warn('[session] Could not read session file:', err.message);
-  }
-  return '';
-}
-
-function saveSession(sessionString) {
-  if (process.env.TELEGRAM_SESSION) {
-    console.log('[session] Yangi session — DigitalOcean da TELEGRAM_SESSION secret ni yangilang');
-    return;
-  }
-  fs.writeFileSync(SESSION_FILE, sessionString, 'utf8');
-  console.log(`[session] Saved to ${SESSION_FILE}`);
-}
+const { loadSession, saveSessionToFile } = require('./lib/session');
 
 async function ensureLoggedIn(client) {
   const apiCredentials = { apiId: API_ID, apiHash: API_HASH };
@@ -101,7 +79,7 @@ async function ensureLoggedIn(client) {
   }
 
   if (!process.stdin.isTTY) {
-    throw new Error('TELEGRAM_SESSION_REQUIRED');
+    throw new Error('TELEGRAM_SESSION_INVALID');
   }
 
   console.log('\n[scraper] Telegram akkauntiga kirish kerak');
@@ -273,15 +251,38 @@ async function disconnectActiveClient() {
   activeClient = null;
 }
 
+function isConfigError(msg) {
+  return /TELEGRAM_SESSION_REQUIRED|TELEGRAM_SESSION_INVALID|CARGO_GROUPS_EMPTY/.test(msg);
+}
+
+function logConfigHelp(err) {
+  const msg = err?.message || '';
+  if (msg === 'TELEGRAM_SESSION_REQUIRED') {
+    console.error('[scraper] ❌ TELEGRAM_SESSION yo\'q!');
+    console.error('[scraper]    DO → Settings → App-Level Environment Variables');
+    console.error('[scraper]    session.txt ichidagi BUTUN matnni Encrypt qilib qo\'ying');
+    console.error('[scraper]    Lokal: node scripts/print-session-for-do.js');
+    return;
+  }
+  if (msg === 'TELEGRAM_SESSION_INVALID') {
+    console.error('[scraper] ❌ Session eskirgan yoki noto\'g\'ri!');
+    console.error('[scraper]    Lokalda: node scraper.js → qayta login → session.txt yangilang');
+    console.error('[scraper]    DO dagi TELEGRAM_SESSION ni yangi qiymat bilan almashtiring');
+  }
+}
+
 function reconnectDelay(err, attempt) {
   const msg = err?.message || '';
+  if (isConfigError(msg)) {
+    return 1_800_000;
+  }
   if (/AUTH_KEY_DUPLICATED/i.test(msg)) {
     return Math.min(120_000 * attempt, 600_000);
   }
   if (/TIMEOUT|ETIMEDOUT|ECONNRESET|Not connected|connection closed/i.test(msg)) {
     return Math.min(30_000 * attempt, 180_000);
   }
-  if (/NO_GROUPS_CONNECTED|CARGO_GROUPS_EMPTY|TELEGRAM_SESSION_REQUIRED/i.test(msg)) {
+  if (/NO_GROUPS_CONNECTED/i.test(msg)) {
     return Math.min(60_000 * attempt, 300_000);
   }
   return Math.min(45_000 * attempt, 300_000);
@@ -334,6 +335,10 @@ async function runScraper() {
     throw new Error('TELEGRAM_SESSION_REQUIRED');
   }
 
+  if (sessionString) {
+    console.log(`[scraper] Session yuklandi (${sessionString.length} belgi)`);
+  }
+
   const client = new TelegramClient(new StringSession(sessionString), API_ID, API_HASH, {
     connectionRetries: 10,
     retryDelay: 5000,
@@ -356,7 +361,7 @@ async function runScraper() {
 
   const newSession = client.session.save();
   if (newSession && newSession !== sessionString) {
-    saveSession(newSession);
+    saveSessionToFile(newSession);
   }
 
   console.log('[scraper] Login muvaffaqiyatli');
@@ -482,7 +487,10 @@ async function startScraperLoop() {
       const isAuthDup = /AUTH_KEY_DUPLICATED/i.test(err.message);
 
       console.error('[scraper] Xato:', err.message);
-      if (isAuthDup) {
+      if (isConfigError(err.message)) {
+        logConfigHelp(err);
+        console.error('[scraper] Konfiguratsiya tuzatilguncha 30 daqiqada bir marta uriniladi...');
+      } else if (isAuthDup) {
         console.error('[scraper] ❌ Session boshqa joyda ochiq — lokal scraper to\'xtating, 2 daqiqa kuting');
       }
       console.error(`[scraper] ${Math.round(delay / 1000)}s dan keyin qayta ulanadi (urinish ${attempt})...`);

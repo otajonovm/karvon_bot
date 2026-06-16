@@ -8,9 +8,19 @@ const { validateEnv, printEnvHelp } = require('./lib/validateEnv');
 const { startHealthServer } = require('./lib/healthServer');
 const { startScraperLoop, stopScraperLoop } = require('./scraper');
 
-const IS_CLOUD = !!(process.env.DO_APP_ID || process.env.PORT);
+const { loadSession, sessionDiagnostics, isProductionCloud } = require('./lib/session');
+
+const IS_CLOUD = isProductionCloud();
+const sessionInfo = sessionDiagnostics();
 
 console.log('[karvon] Tizim parallel ishga tushmoqda...');
+console.log(
+  `[karvon] TELEGRAM_SESSION: ${
+    sessionInfo.activeChars
+      ? `OK (${sessionInfo.activeChars} belgi, manba: ${sessionInfo.source})`
+      : 'YO\'Q — scraper guruhlarni o\'qiy olmaydi'
+  }`
+);
 
 const missing = validateEnv({ requireSession: IS_CLOUD });
 if (missing.length) {

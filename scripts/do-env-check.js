@@ -40,7 +40,9 @@ for (const key of KEYS) {
 }
 
 console.log(
-  `  ${hasSession ? '✓' : '✗'} ${SESSION_KEY}${hasSession ? '' : ' — session.txt yoki karvon.env da yo\'q'}`
+  `  ${hasSession ? '✓' : '✗'} ${SESSION_KEY}${
+    hasSession ? ` (${(process.env.TELEGRAM_SESSION?.trim() || sessionFromFile).length} belgi)` : ' — session.txt yo\'q'
+  }`
 );
 
 console.log(`\n  Lokal: ${ok}/${KEYS.length} + session ${hasSession ? 'OK' : 'YO\'Q'}`);
@@ -55,9 +57,9 @@ console.log(`
   1. Apps → karvon-bot → Settings → App-Level Environment Variables → Edit
   2. Quyidagi 8 ta kalitni qo'shing (Encrypt ✓, Scope: Run time):
      ${[...KEYS, SESSION_KEY].join(', ')}
-  3. Qiymatlarni kompyuteringizdagi karvon.env va session.txt dan nusxalang
-  4. Save → Actions → Deploy
-  5. karvon-bot / karvon-scraper component Settings da bo'sh override bo'lmasin
+  3. TELEGRAM_SESSION: node scripts/print-session-for-do.js → butun matnni DO ga
+  4. Qolganlari: karvon.env dan
+  5. Save → Actions → Deploy
 
   Eslatma: GitHubga secret push qilmang — faqat DO dashboard.
 `);
