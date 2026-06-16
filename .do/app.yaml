@@ -1,11 +1,11 @@
-# DigitalOcean App Platform — Web Service + health check
-# Dashboard: Apps → karvon-bot → Settings → App Spec → Edit → Save → Deploy
+# DigitalOcean — Bot (HTTP) va Scraper (alohida worker)
+# MUHIM: Scraper faqat 1 instance! Bot va scraper alohida — AUTH_KEY_DUPLICATED oldini oladi.
 
 name: karvon-bot
 region: fra
 
 services:
-  - name: karvon
+  - name: karvon-bot
     github:
       repo: otajonovm/karvon_bot
       branch: main
@@ -15,9 +15,9 @@ services:
     instance_size_slug: basic-xxs
     instance_count: 1
     http_port: 8080
-    run_command: npm start
+    run_command: node index.js
     health_check:
-      initial_delay_seconds: 60
+      initial_delay_seconds: 30
       period_seconds: 10
       timeout_seconds: 5
       success_threshold: 1
@@ -51,9 +51,52 @@ services:
       - key: CARGO_GROUPS
         scope: RUN_TIME
         type: SECRET
+      - key: TELEGRAM_USE_WSS
+        value: "1"
+        scope: RUN_TIME
+
+workers:
+  - name: karvon-scraper
+    github:
+      repo: otajonovm/karvon_bot
+      branch: main
+      deploy_on_push: true
+    source_dir: /
+    environment_slug: node-js
+    instance_size_slug: basic-xxs
+    instance_count: 1
+    run_command: node scraper.js
+    envs:
+      - key: NODE_ENV
+        value: production
+        scope: RUN_TIME
+      - key: BOT_TOKEN
+        scope: RUN_TIME
+        type: SECRET
+      - key: API_ID
+        scope: RUN_TIME
+        type: SECRET
+      - key: API_HASH
+        scope: RUN_TIME
+        type: SECRET
+      - key: SUPABASE_URL
+        scope: RUN_TIME
+        type: SECRET
+      - key: SUPABASE_KEY
+        scope: RUN_TIME
+        type: SECRET
+      - key: DEEPSEEK_API_KEY
+        scope: RUN_TIME
+        type: SECRET
+      - key: CARGO_GROUPS
+        scope: RUN_TIME
+        type: SECRET
       - key: TELEGRAM_SESSION
         scope: RUN_TIME
         type: SECRET
       - key: TELEGRAM_USE_WSS
         value: "1"
+        scope: RUN_TIME
+      - key: SCRAPER_START_DELAY_SEC
+        value: "90"
         scope: RUN_TIME

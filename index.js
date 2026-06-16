@@ -2,6 +2,10 @@ require('./config/env');
 
 console.log('[bot] Karvon index.js yuklanmoqda...');
 
+if (process.env.PORT) {
+  require('./lib/healthServer').startHealthServer();
+}
+
 const { Telegraf, Markup } = require('telegraf');
 const { getSupabase } = require('./lib/supabase');
 const {

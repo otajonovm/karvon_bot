@@ -274,6 +274,12 @@ process.once('SIGINT', () => shutdownScraper('SIGINT'));
 process.once('SIGTERM', () => shutdownScraper('SIGTERM'));
 
 async function main() {
+  if (process.env.DO_APP_ID) {
+    const sec = parseInt(process.env.SCRAPER_START_DELAY_SEC || '90', 10);
+    console.log(`[scraper] Cloud: ${sec}s kutilmoqda (session conflict oldini olish)...`);
+    await new Promise((r) => setTimeout(r, sec * 1000));
+  }
+
   if (CARGO_GROUPS.length === 0) {
     console.error('[scraper] CARGO_GROUPS bo\'sh!');
     console.error('  karvon.env ga qo\'shing: CARGO_GROUPS=@guruh1,@guruh2');

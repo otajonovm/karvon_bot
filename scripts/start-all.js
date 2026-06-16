@@ -65,13 +65,17 @@ function log(msg) {
   console.log(`[karvon] ${msg}`);
 }
 
-function restartDelay(name, code) {
+function restartDelay(name, code, attempt = 1) {
   if (code === 0) return null;
-  if (name === 'scraper' && code === EXIT_AUTH_DUP) return 120_000;
+  if (name === 'scraper' && code === EXIT_AUTH_DUP) {
+    return Math.min(120_000 * attempt, 600_000);
+  }
   if (name === 'scraper') return 45_000;
   if (name === 'bot' && code === 1) return 20_000;
   return 10_000;
 }
+
+const restartAttempts = new Map();
 
 function startService(name, script, delayMs = 0) {
   if (shuttingDown) return;
@@ -95,7 +99,11 @@ function startService(name, script, delayMs = 0) {
       if (shuttingDown || signal === 'SIGINT' || signal === 'SIGTERM') return;
       if (process.env.KARVON_ENV_INVALID === '1') return;
 
-      const wait = restartDelay(name, code);
+      const attempts = (restartAttempts.get(name) || 0) + 1;
+      if (code !== EXIT_AUTH_DUP) restartAttempts.set(name, 0);
+      else restartAttempts.set(name, attempts);
+
+      const wait = restartDelay(name, code, attempts);
       if (wait === null) {
         log(`${name} to'xtadi (kod: 0) — qayta ishga tushirilmaydi.`);
         return;
@@ -173,13 +181,12 @@ async function main() {
   await deleteWebhook();
 
   log('═══════════════════════════════════════');
-  log('Karvon tizimi ishga tushmoqda');
-  log('  • Bot      → mijoz/haydovchi');
-  log('  • Scraper  → guruhlardan yuk olish');
+  log('Karvon tizimi ishga tushmoqda (LOKAL)');
+  log('  • Cloud uchun: node index.js + node scraper.js alohida');
   log('═══════════════════════════════════════\n');
 
-  startService('scraper', 'scraper.js');
-  startService('bot', 'index.js', 5000);
+  startService('bot', 'index.js');
+  startService('scraper', 'scraper.js', IS_CLOUD ? 90_000 : 10_000);
 }
 
 main().catch((err) => {
