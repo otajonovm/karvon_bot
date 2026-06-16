@@ -35,5 +35,5 @@ services:
         value: "1"
         scope: RUN_TIME
       - key: SCRAPER_START_DELAY_SEC
-        value: "20"
+        value: "60"
         scope: RUN_TIME
