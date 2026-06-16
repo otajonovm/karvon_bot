@@ -18,17 +18,14 @@ const KEYS = [
   'DEEPSEEK_API_KEY',
   'CARGO_GROUPS',
 ];
-const SESSION_KEY = 'TELEGRAM_SESSION';
+const { loadSession, encodeSessionB64 } = require('../lib/session');
 
 function has(key) {
   return Boolean(process.env[key]?.trim());
 }
 
-const sessionFile = path.join(ROOT, 'session.txt');
-const sessionFromFile = fs.existsSync(sessionFile)
-  ? fs.readFileSync(sessionFile, 'utf8').trim()
-  : '';
-const hasSession = has(SESSION_KEY) || Boolean(sessionFromFile);
+const session = loadSession();
+const hasSession = Boolean(session);
 
 console.log('\n[karvon] DigitalOcean App-Level Environment Variables tekshiruvi\n');
 
@@ -40,9 +37,7 @@ for (const key of KEYS) {
 }
 
 console.log(
-  `  ${hasSession ? '✓' : '✗'} ${SESSION_KEY}${
-    hasSession ? ` (${(process.env.TELEGRAM_SESSION?.trim() || sessionFromFile).length} belgi)` : ' — session.txt yo\'q'
-  }`
+  `  ${hasSession ? '✓' : '✗'} TELEGRAM_SESSION_B64${hasSession ? ` (${session.length} belgi session, b64: ${encodeSessionB64(session).length})` : ' — session.txt yo\'q'}`
 );
 
 console.log(`\n  Lokal: ${ok}/${KEYS.length} + session ${hasSession ? 'OK' : 'YO\'Q'}`);
@@ -55,9 +50,8 @@ if (ok < KEYS.length || !hasSession) {
 console.log(`
   Keyingi qadam (DO dashboard):
   1. Apps → karvon-bot → Settings → App-Level Environment Variables → Edit
-  2. Quyidagi 8 ta kalitni qo'shing (Encrypt ✓, Scope: Run time):
-     ${[...KEYS, SESSION_KEY].join(', ')}
-  3. TELEGRAM_SESSION: node scripts/print-session-for-do.js → butun matnni DO ga
+  2. Kalitlar (Encrypt ✓, Run time): ${KEYS.join(', ')}, TELEGRAM_SESSION_B64
+  3. Session: node scripts/print-session-for-do.js → b64 ni DO ga qo'ying
   4. Qolganlari: karvon.env dan
   5. Save → Actions → Deploy
 

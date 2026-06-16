@@ -8,22 +8,25 @@ const { validateEnv, printEnvHelp } = require('./lib/validateEnv');
 const { startHealthServer } = require('./lib/healthServer');
 const { startScraperLoop, stopScraperLoop } = require('./scraper');
 
-const { loadSession, sessionDiagnostics, isProductionCloud } = require('./lib/session');
+const { loadSession, sessionDiagnostics } = require('./lib/session');
 
-const IS_CLOUD = isProductionCloud();
 const sessionInfo = sessionDiagnostics();
+const session = loadSession();
 
 console.log('[karvon] Tizim parallel ishga tushmoqda...');
 console.log(
-  `[karvon] TELEGRAM_SESSION: ${
-    sessionInfo.activeChars
-      ? `OK (${sessionInfo.activeChars} belgi, manba: ${sessionInfo.source})`
-      : 'YO\'Q — scraper guruhlarni o\'qiy olmaydi'
+  `[karvon] Session: ${
+    session
+      ? `OK (${session.length} belgi, ${sessionInfo.source})`
+      : 'YO\'Q — deploy to\'xtatiladi'
   }`
 );
 
-const missing = validateEnv({ requireSession: IS_CLOUD });
-if (missing.length) {
+const missing = validateEnv({ requireSession: true });
+if (missing.length || !session) {
+  if (!session && !missing.includes('TELEGRAM_SESSION yoki TELEGRAM_SESSION_B64')) {
+    console.error('Missing required env variable: TELEGRAM_SESSION yoki TELEGRAM_SESSION_B64');
+  }
   for (const key of missing) {
     console.error(`Missing required env variable: ${key}`);
   }

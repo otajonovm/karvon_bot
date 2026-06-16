@@ -259,8 +259,8 @@ function logConfigHelp(err) {
   const msg = err?.message || '';
   if (msg === 'TELEGRAM_SESSION_REQUIRED') {
     console.error('[scraper] ❌ TELEGRAM_SESSION yo\'q!');
-    console.error('[scraper]    DO → Settings → App-Level Environment Variables');
-    console.error('[scraper]    session.txt ichidagi BUTUN matnni Encrypt qilib qo\'ying');
+    console.error('[scraper]    DO → App-Level → TELEGRAM_SESSION_B64 (Encrypt, tavsiya)');
+    console.error('[scraper]    yoki TELEGRAM_SESSION — session.txt butun qatori');
     console.error('[scraper]    Lokal: node scripts/print-session-for-do.js');
     return;
   }
