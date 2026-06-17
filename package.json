@@ -12,7 +12,8 @@
     "test:pipeline": "node scripts/test-pipeline.js",
     "test:groups": "node scripts/test-groups.js",
     "backfill": "node scripts/backfill.js",
-    "stop": "node scripts/stop-karvon.js"
+    "stop": "node scripts/stop-karvon.js",
+    "verify:migrations": "node scripts/verify-migrations.js"
   },
   "engines": {
     "node": ">=18.0.0"

@@ -13,7 +13,7 @@ const {
   markOrderTakenForOthers,
   acceptOrder,
 } = require('./lib/notifications');
-const { insertOrder } = require('./lib/orders');
+const { insertOrder, insertBrokerOrder, getOrderById } = require('./lib/orders');
 const { normalizePhone } = require('./lib/normalize');
 const { REGIONS, CAR_TYPES, ROLES, DRIVER_STATUS, DRIVER_WIZARD_REGIONS, wizardSlugToLabel } = require('./config/constants');
 const {
@@ -23,15 +23,20 @@ const {
   BTN_SEEKING,
   BTN_BUSY,
   BTN_BACK_MAIN,
-  MSG_POST_CARGO_SOON,
   mainMenuKeyboard,
   statusScreenKeyboard,
   driverCarKeyboard,
   driverRegionKeyboard,
+  brokerCarKeyboard,
+  brokerRegionKeyboard,
 } = require('./lib/menus');
 const { upsertDriverProfile, setDriverStatus, getDriverProfile } = require('./lib/drivers');
 const { getUserById, upsertUserPhone } = require('./lib/users');
 const { buildStatusMessage, ensureDriverRole } = require('./lib/statusPanel');
+const { ensureBroker } = require('./lib/brokers');
+const { findDriversForBroker, formatDriverList } = require('./lib/brokerMatching');
+const { crosspostOrder, crosspostToDm } = require('./lib/crosspost');
+const { getActiveClient } = require('./lib/userbotClient');
 
 // ─── Validate env ────────────────────────────────────────────────────────────
 
@@ -48,10 +53,14 @@ if (missing.length) {
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const supabase = getSupabase();
 
-// In-memory wizard sessions: userId -> { step, data }
+// In-memory broker yuk joylash wizard
+const brokerSessions = new Map();
+const pendingBroker = new Set();
+
+// Eski /neworder wizard
 const wizardSessions = new Map();
 
-// In-memory profile wizard: userId -> { step, car_type?, from_region?, to_region? }
+// Haydovchi profil wizard
 const profileSessions = new Map();
 
 const CAR_SLUG_MAP = {
@@ -107,6 +116,40 @@ function clearProfile(userId) {
 
 async function sendMainMenu(ctx, text) {
   await ctx.reply(text, { parse_mode: 'HTML', ...mainMenuKeyboard() });
+}
+
+function clearBroker(userId) {
+  brokerSessions.delete(userId);
+}
+
+async function beginBrokerWizard(ctx, phone) {
+  const userId = ctx.from.id;
+  await ensureBroker(userId, phone);
+
+  const sent = await ctx.reply('🚚 Moshina turi:', brokerCarKeyboard());
+  brokerSessions.set(userId, {
+    step: 'car_type',
+    phone,
+    chatId: sent.chat.id,
+    messageId: sent.message_id,
+  });
+}
+
+async function startBrokerFlow(ctx) {
+  const userId = ctx.from.id;
+  const user = await getUserById(userId);
+
+  if (!user?.phone) {
+    pendingBroker.add(userId);
+    return ctx.reply(
+      '📱 Davom etish uchun telefon raqamingizni yuboring:',
+      Markup.keyboard([Markup.button.contactRequest('📱 Telefon raqamni yuborish')])
+        .oneTime()
+        .resize()
+    );
+  }
+
+  await beginBrokerWizard(ctx, user.phone);
 }
 
 async function beginDriverProfileFlow(ctx) {
@@ -175,6 +218,13 @@ bot.on('contact', async (ctx) => {
     await upsertUserPhone(userId, phone);
 
     await ctx.reply('✅ Raqamingiz saqlandi!', Markup.removeKeyboard());
+
+    if (pendingBroker.has(userId)) {
+      pendingBroker.delete(userId);
+      await beginBrokerWizard(ctx, phone);
+      return;
+    }
+
     await sendMainMenu(
       ctx,
       '🎉 <b>Ro\'yxatdan o\'tdingiz!</b>\n\nKerakli bo\'limni tanlang:'
@@ -193,7 +243,12 @@ bot.on('contact', async (ctx) => {
 // ─── Asosiy menyu (Reply Keyboard) ───────────────────────────────────────────
 
 bot.hears(BTN_POST_CARGO, async (ctx) => {
-  await ctx.reply(MSG_POST_CARGO_SOON, { parse_mode: 'HTML', ...mainMenuKeyboard() });
+  try {
+    await startBrokerFlow(ctx);
+  } catch (err) {
+    console.error('[post_cargo]', err.message);
+    await ctx.reply('Xatolik yuz berdi. Qayta urinib ko\'ring.', mainMenuKeyboard());
+  }
 });
 
 bot.hears(BTN_FIND_CARGO, async (ctx) => {
@@ -335,6 +390,119 @@ bot.action(/^drv_to_(.+)$/, async (ctx) => {
       '<i>(Misol: 01 A 123 AA)</i>',
     { parse_mode: 'HTML', reply_markup: { inline_keyboard: [] } }
   );
+});
+
+// ─── Broker yuk joylash wizard (4 qadam) ─────────────────────────────────────
+
+bot.action(/^brk_car_(.+)$/, async (ctx) => {
+  const carType = CAR_SLUG_MAP[ctx.match[1]];
+  if (!carType) return ctx.answerCbQuery('Noto\'g\'ri tanlov');
+
+  const userId = ctx.from.id;
+  const session = brokerSessions.get(userId) || {};
+  brokerSessions.set(userId, { ...session, step: 'from_region', truck_type: carType });
+
+  await ctx.answerCbQuery();
+  await ctx.editMessageText(
+    `🚚 Moshina: <b>${carType}</b>\n\n🔄 <b>Yuklash viloyati:</b>`,
+    { parse_mode: 'HTML', ...brokerRegionKeyboard('brk_from') }
+  );
+});
+
+bot.action(/^brk_from_(.+)$/, async (ctx) => {
+  const slug = ctx.match[1];
+  const userId = ctx.from.id;
+  const session = brokerSessions.get(userId);
+
+  if (!session?.truck_type) return ctx.answerCbQuery('Avval mashina tanlang');
+  if (!DRIVER_WIZARD_REGIONS.some((r) => r.slug === slug)) {
+    return ctx.answerCbQuery('Noto\'g\'ri viloyat');
+  }
+
+  const fromLabel = wizardSlugToLabel(slug);
+  brokerSessions.set(userId, { ...session, step: 'to_region', from_region: fromLabel });
+
+  await ctx.answerCbQuery();
+  await ctx.editMessageText(
+    `🚚 ${session.truck_type} | Yuklash: <b>${fromLabel}</b>\n\n🏁 <b>Tushirish viloyati:</b>`,
+    { parse_mode: 'HTML', ...brokerRegionKeyboard('brk_to') }
+  );
+});
+
+bot.action(/^brk_to_(.+)$/, async (ctx) => {
+  const slug = ctx.match[1];
+  const userId = ctx.from.id;
+  const session = brokerSessions.get(userId);
+
+  if (!session?.from_region) return ctx.answerCbQuery('Avval yuklash viloyatini tanlang');
+  if (!DRIVER_WIZARD_REGIONS.some((r) => r.slug === slug)) {
+    return ctx.answerCbQuery('Noto\'g\'ri viloyat');
+  }
+
+  const toLabel = wizardSlugToLabel(slug);
+  brokerSessions.set(userId, {
+    ...session,
+    step: 'details',
+    to_region: toLabel,
+  });
+
+  await ctx.answerCbQuery();
+  await ctx.editMessageText(
+    `🚚 ${session.truck_type}\n` +
+      `Marshrut: <b>${session.from_region}</b> ➔ <b>${toLabel}</b>`,
+    { parse_mode: 'HTML', reply_markup: { inline_keyboard: [] } }
+  );
+
+  await ctx.reply(
+    '📝 Yuk turi, vazni va taklif narxini bitta xabarda yozing:\n' +
+      "<i>(Misol: Mebel, 20tn, 6 mln so'm)</i>",
+    { parse_mode: 'HTML' }
+  );
+});
+
+bot.action(/^crosspost_(.+)$/, async (ctx) => {
+  const orderId = ctx.match[1];
+  const userId = ctx.from.id;
+
+  await ctx.answerCbQuery('Guruhlarga yuborilmoqda...');
+
+  try {
+    const order = await getOrderById(orderId);
+    if (!order) {
+      return ctx.reply('Yuk topilmadi.');
+    }
+    if (order.broker_user_id && Number(order.broker_user_id) !== userId) {
+      return ctx.reply('Faqat o\'z yukingizni tarqatishingiz mumkin.');
+    }
+
+    const client = getActiveClient();
+    if (!client) {
+      return ctx.reply(
+        '⚠️ Userbot hozir ulanmagan. 1-2 daqiqa kutib qayta urinib ko\'ring.'
+      );
+    }
+
+    await ctx.editMessageReplyMarkup({ inline_keyboard: [] }).catch(() => {});
+
+    const result = await crosspostOrder(client, order);
+    console.log(`[crosspost] order=${orderId} sent=${result.sent} failed=${result.failed}`);
+
+    if (result.sent === 0) {
+      const detail = result.errors.length
+        ? '\n' + result.errors.map((e) => `• ${e.group}: ${e.error}`).join('\n')
+        : '';
+      return ctx.reply(`❌ Hech qanday guruhga yuborib bo'lmadi.${detail}`);
+    }
+
+    const failNote = result.failed > 0 ? `\n⚠️ ${result.failed} ta guruhda xatolik bo'ldi.` : '';
+    await ctx.reply(`✅ Yuk ${result.sent} ta guruhga muvaffaqiyatli tarqatildi!${failNote}`);
+  } catch (err) {
+    console.error('[crosspost]', err.message);
+    if (err.message === 'CROSSPOST_GROUPS_EMPTY') {
+      return ctx.reply('Tarqatish uchun guruhlar sozlanmagan (CARGO_GROUPS / CROSSPOST_GROUPS).');
+    }
+    await ctx.reply('Tarqatishda xatolik. Keyinroq qayta urinib ko\'ring.');
+  }
 });
 
 // ─── Driver availability (Reply Keyboard) ───────────────────────────────────
@@ -526,6 +694,64 @@ bot.on('text', async (ctx, next) => {
 
   if (MENU_BUTTONS.has(text)) return next();
 
+  const brk = brokerSessions.get(userId);
+  if (brk?.step === 'details') {
+    if (text.length < 5) {
+      return ctx.reply('Iltimos, yuk haqida batafsil yozing (turi, vazn, narx).');
+    }
+
+    try {
+      const order = await insertBrokerOrder({
+        truck_type: brk.truck_type,
+        from_region: brk.from_region,
+        to_region: brk.to_region,
+        cargo_details: text,
+        broker_phone: brk.phone,
+        broker_user_id: userId,
+      });
+
+      clearBroker(userId);
+
+      const drivers = await findDriversForBroker({
+        truck_type: brk.truck_type,
+        from_region: brk.from_region,
+        to_region: brk.to_region,
+      });
+
+      await notifyMatchingDrivers(ctx.telegram, order);
+
+      const dmClient = getActiveClient();
+      if (dmClient) {
+        crosspostToDm(dmClient, order).catch((err) => {
+          console.error('[crosspost_dm]', err.message);
+        });
+      }
+
+      const crosspostKb = Markup.inlineKeyboard([
+        [Markup.button.callback('🚀 Guruhlarga tarqatish', `crosspost_${order.id}`)],
+      ]);
+
+      if (drivers.length > 0) {
+        await ctx.reply(
+          "✅ Yukingizga mos bo'sh moshinalar topildi:\n" +
+            formatDriverList(drivers) +
+            '\n\n👇 Telegram guruhlariga ham brending bilan tarqating:',
+          crosspostKb
+        );
+      } else {
+        await ctx.reply(
+          "✅ Yukingiz tizimga qo'shildi va shu yo'nalishdagi barcha haydovchilarga push-xabar yuborildi!\n\n" +
+            '👇 Telegram guruhlariga ham brending bilan tarqating:',
+          crosspostKb
+        );
+      }
+    } catch (err) {
+      console.error('[broker_order]', err.message);
+      await ctx.reply('Saqlashda xatolik. Qayta urinib ko\'ring.', mainMenuKeyboard());
+    }
+    return;
+  }
+
   const prof = profileSessions.get(userId);
   if (prof?.step === 'truck_number') {
     if (text.length < 4) {
@@ -631,53 +857,7 @@ bot.action('wiz_cancel', async (ctx) => {
   await ctx.editMessageText('❌ Buyurtma bekor qilindi.');
 });
 
-// ─── Order acceptance ────────────────────────────────────────────────────────
-
-bot.action(/^contact_order_(.+)$/, async (ctx) => {
-  const orderId = ctx.match[1];
-  const driverId = ctx.from.id;
-
-  try {
-    const { data: user } = await supabase
-      .from('users')
-      .select('role')
-      .eq('id', driverId)
-      .single();
-
-    if (!user || user.role !== ROLES.DRIVER) {
-      return ctx.answerCbQuery('Faqat haydovchilar uchun');
-    }
-
-    const { data: order, error } = await supabase
-      .from('orders')
-      .select('*')
-      .eq('id', orderId)
-      .single();
-
-    if (error || !order) {
-      return ctx.answerCbQuery('Buyurtma topilmadi');
-    }
-
-    const phone = normalizePhone(order.phone_number) || order.phone_number;
-    const tel = phone.replace(/\s/g, '');
-
-    await ctx.answerCbQuery('📞 Telefon');
-    await ctx.reply(
-      `📞 <b>Qo'ng'iroq qiling:</b>\n<a href="tel:${tel}">${phone}</a>`,
-      { parse_mode: 'HTML', ...mainMenuKeyboard() }
-    );
-
-    if (order.status === 'active') {
-      const result = await acceptOrder(orderId, driverId);
-      if (result.success) {
-        await markOrderTakenForOthers(ctx.telegram, result.order, driverId);
-      }
-    }
-  } catch (err) {
-    console.error('[contact_order]', err.message);
-    await ctx.answerCbQuery('Xatolik yuz berdi');
-  }
-});
+// ─── Order acceptance (eski callback xabarlar uchun) ─────────────────────────
 
 bot.action(/^accept_order_(.+)$/, async (ctx) => {
   const orderId = ctx.match[1];

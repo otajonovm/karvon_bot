@@ -1,15 +1,29 @@
-const REGIONS = ['Toshkent', 'Vodiy', 'Samarqand', 'Buxoro', 'Voha'];
+/** AI va filtrlash uchun 8 ta bosh viloyat markazi */
+const CANONICAL_CITIES = [
+  'Toshkent',
+  "Farg'ona",
+  'Andijon',
+  'Namangan',
+  'Samarqand',
+  'Buxoro',
+  'Qashqadaryo',
+  'Surxondaryo',
+];
+
+const REGIONS = CANONICAL_CITIES;
 
 const CAR_TYPES = ['Labo/Damas', 'Gazel', 'Isuzu', 'Fura'];
 
-/** Marshrut wizard — 6 ta asosiy viloyat markazi */
+/** Marshrut wizard — 8 ta viloyat */
 const DRIVER_WIZARD_REGIONS = [
-  { slug: 'toshkent',  label: 'Toshkent'  },
-  { slug: 'fargona',   label: "Farg'ona"  },
-  { slug: 'andijon',   label: 'Andijon'   },
-  { slug: 'namangan',  label: 'Namangan'  },
-  { slug: 'samarqand', label: 'Samarqand' },
-  { slug: 'buxoro',    label: 'Buxoro'    },
+  { slug: 'toshkent',  label: 'Toshkent'     },
+  { slug: 'fargona',   label: "Farg'ona"     },
+  { slug: 'andijon',   label: 'Andijon'      },
+  { slug: 'namangan',  label: 'Namangan'     },
+  { slug: 'samarqand', label: 'Samarqand'    },
+  { slug: 'buxoro',    label: 'Buxoro'       },
+  { slug: 'qashqa',    label: 'Qashqadaryo'  },
+  { slug: 'surxon',    label: 'Surxondaryo' },
 ];
 
 /** @deprecated — routeMatch uchun */
@@ -57,21 +71,34 @@ const ROUTES = REGIONS.flatMap((from) =>
 const GEMINI_SYSTEM_INSTRUCTION = `Extract logistics data from Uzbek Telegram cargo group messages.
 Return strict raw JSON only (no markdown) with keys: from_region, to_region, car_type, cargo_details, phone_number.
 
-Normalize regions to exactly: Toshkent, Vodiy, Samarqand, Buxoro, Voha.
+Normalize regions to EXACTLY one of: Toshkent, Farg'ona, Andijon, Namangan, Samarqand, Buxoro, Qashqadaryo, Surxondaryo.
+Map sub-cities: Qo'qon/Marg'ilon/Rishton→Farg'ona; Asaka/Shahrixon→Andijon; Chust/Pop→Namangan; Termiz→Surxondaryo; Qarshi→Qashqadaryo.
+Never use Vodiy or Voha — always pick the specific province center above.
 Normalize car_type to exactly: Labo/Damas, Gazel, Isuzu, Fura.
 phone_number must include country code (+998...).
 
 If spam, advertisement, or not a cargo transport offer, return {"error": "spam"}.
 
-Example input: "Toshkentdan Vodiyga 5t yuk. Isuzu kerak. 3mln. +998901234567"
-Example output: {"from_region":"Toshkent","to_region":"Vodiy","car_type":"Isuzu","cargo_details":"5t yuk, 3mln","phone_number":"+998901234567"}`;
+Example: "Toshkentdan Qo'qonga 5t yuk. Fura. +998901234567"
+Output: {"from_region":"Toshkent","to_region":"Farg'ona","car_type":"Fura","cargo_details":"5t yuk","phone_number":"+998901234567"}`;
+
+/** Guruh/kanal ID (scraper va crosspost uchun) */
+function isGroupChatRef(ref) {
+  const s = String(ref).trim();
+  if (!s) return false;
+  if (s.startsWith('@')) return true;
+  if (s.startsWith('-')) return true;
+  // Faqat musbat raqam — odatda user lichka ID, guruh emas
+  return !/^\d+$/.test(s);
+}
 
 /** Cargo groups: karvon.env da CARGO_GROUPS=@guruh1,@guruh2 yoki shu yerga yozing */
 function loadCargoGroups() {
   const fromEnv = (process.env.CARGO_GROUPS || '')
     .split(',')
     .map((g) => g.trim().replace(/^@/, ''))
-    .filter(Boolean);
+    .filter(Boolean)
+    .filter(isGroupChatRef);
 
   const hardcoded = [
     // 'logistika_guruhi',
@@ -83,8 +110,32 @@ function loadCargoGroups() {
 
 const CARGO_GROUPS = loadCargoGroups();
 
+/** Guruhlarga tarqatish — CROSSPOST_GROUPS yoki CARGO_GROUPS */
+function loadCrosspostGroups() {
+  const fromEnv = (process.env.CROSSPOST_GROUPS || '')
+    .split(',')
+    .map((g) => g.trim().replace(/^@/, ''))
+    .filter(Boolean)
+    .filter(isGroupChatRef);
+
+  return fromEnv.length > 0 ? fromEnv : CARGO_GROUPS;
+}
+
+const CROSSPOST_GROUPS = loadCrosspostGroups();
+
+/** Broker yuklari tashlanadigan lichkalar (Telegram user ID, vergul bilan) */
+function loadCrosspostDmIds() {
+  return (process.env.CROSSPOST_DM_ID || '')
+    .split(',')
+    .map((id) => id.trim().replace(/^@/, ''))
+    .filter(Boolean);
+}
+
+const CROSSPOST_DM_IDS = loadCrosspostDmIds();
+
 module.exports = {
   REGIONS,
+  CANONICAL_CITIES,
   CAR_TYPES,
   DRIVER_WIZARD_REGIONS,
   DRIVER_CITIES,
@@ -97,4 +148,6 @@ module.exports = {
   ROUTES,
   GEMINI_SYSTEM_INSTRUCTION,
   CARGO_GROUPS,
+  CROSSPOST_GROUPS,
+  CROSSPOST_DM_IDS,
 };

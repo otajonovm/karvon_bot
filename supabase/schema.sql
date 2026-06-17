@@ -9,6 +9,13 @@ CREATE TABLE IF NOT EXISTS users (
   updated_at  TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Broker profiles (logistlar)
+CREATE TABLE IF NOT EXISTS brokers (
+  user_id     BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  phone       TEXT NOT NULL,
+  updated_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- Driver profiles (only for users with role_driver)
 CREATE TABLE IF NOT EXISTS drivers (
   user_id           BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
@@ -41,12 +48,16 @@ CREATE TABLE IF NOT EXISTS orders (
   car_type          TEXT NOT NULL,
   cargo_details     TEXT NOT NULL,
   phone_number      TEXT NOT NULL,
+  broker_phone      TEXT,
+  broker_user_id    BIGINT REFERENCES users(id),
   status            TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'taken')),
   taken_by          BIGINT REFERENCES users(id),
   source            TEXT NOT NULL DEFAULT 'bot' CHECK (source IN ('bot', 'scraper')),
   source_group      TEXT,
   source_message_id BIGINT,
   raw_text          TEXT,
+  sender_username     TEXT,
+  sender_telegram_id  BIGINT,
   notification_refs JSONB DEFAULT '[]'::jsonb,
   created_at        TIMESTAMPTZ DEFAULT NOW()
 );

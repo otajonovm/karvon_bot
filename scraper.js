@@ -13,10 +13,11 @@ const { NewMessage } = require('telegram/events');
 const { getSupabase } = require('./lib/supabase');
 const { parseCargoMessage, logAiStats } = require('./lib/gemini');
 const { notifyMatchingDrivers } = require('./lib/notifications');
-const { insertOrder } = require('./lib/orders');
+const { insertOrder, logSupabaseError } = require('./lib/orders');
 const { normalizePhone } = require('./lib/normalize');
 const { createTelegramAdapter } = require('./lib/botApi');
 const { CARGO_GROUPS } = require('./config/constants');
+const { setActiveClient, clearActiveClient } = require('./lib/userbotClient');
 
 // ─── Validate env ────────────────────────────────────────────────────────────
 
@@ -170,6 +171,22 @@ function isAllowedChat(chatId, allowedIds) {
   return false;
 }
 
+async function extractSenderMeta(message) {
+  try {
+    const sender = await message.getSender();
+    if (!sender || sender.className === 'Channel' || sender.className === 'Chat') {
+      return { sender_username: null, sender_telegram_id: null };
+    }
+    return {
+      sender_username: sender.username ? String(sender.username).replace(/^@/, '') : null,
+      sender_telegram_id: sender.id ? Number(sender.id) : null,
+    };
+  } catch (err) {
+    console.warn('[scraper] Sender o\'qilmadi:', err.message);
+    return { sender_username: null, sender_telegram_id: null };
+  }
+}
+
 async function handleGroupMessage(message, groupLabel) {
   const msgKey = `${groupLabel}:${message.id}`;
   if (processedMsgKeys.has(msgKey)) return;
@@ -203,9 +220,12 @@ async function handleGroupMessage(message, groupLabel) {
       `${parsed.car_type}, ${parsed.phone_number}`
   );
 
+  const sender = await extractSenderMeta(message);
+
   try {
     const order = await insertOrder({
       ...parsed,
+      ...sender,
       source: 'scraper',
       source_group: groupLabel,
       source_message_id: message.id,
@@ -216,16 +236,18 @@ async function handleGroupMessage(message, groupLabel) {
 
     console.log(`[scraper] Bazaga saqlandi: order #${order.id}`);
     try {
-      // Qat'iy marshrut filtri: lib/notifications → routeMatchesOrder
       await notifyMatchingDrivers(notifyTelegram, order);
     } catch (notifyErr) {
-      console.error('[scraper] Haydovchiga xabar yuborish xatosi:', notifyErr.message);
+      console.error('[scraper] Push xatosi:', notifyErr.message);
     }
+
+    await new Promise((r) => setTimeout(r, 400));
   } catch (err) {
-    const rls = /row-level security/i.test(err.message);
+    if (err?.message) logSupabaseError('scraper.insertOrder', err);
+    const rls = /row-level security/i.test(err?.message || '');
     console.error(
       '[scraper] Saqlash xatosi:',
-      err.message,
+      err?.message || err,
       rls ? '→ supabase/policies.sql ni ishga tushiring' : ''
     );
   }
@@ -250,6 +272,7 @@ async function disconnectActiveClient() {
     /* ignore */
   }
   activeClient = null;
+  clearActiveClient();
 }
 
 function isConfigError(msg) {
@@ -350,6 +373,7 @@ async function runScraper() {
     baseLogger: new Logger('error'),
   });
   activeClient = client;
+  setActiveClient(client);
 
   console.log('[scraper] Telegramga ulanmoqda...');
 
@@ -517,4 +541,9 @@ if (require.main === module) {
   });
 }
 
-module.exports = { startScraperLoop, stopScraperLoop, runScraper };
+function getActiveClient() {
+  const { getActiveClient: getSharedClient } = require('./lib/userbotClient');
+  return getSharedClient();
+}
+
+module.exports = { startScraperLoop, stopScraperLoop, runScraper, getActiveClient };
