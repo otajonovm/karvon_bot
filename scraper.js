@@ -216,6 +216,7 @@ async function handleGroupMessage(message, groupLabel) {
 
     console.log(`[scraper] Bazaga saqlandi: order #${order.id}`);
     try {
+      // Qat'iy marshrut filtri: lib/notifications → routeMatchesOrder
       await notifyMatchingDrivers(notifyTelegram, order);
     } catch (notifyErr) {
       console.error('[scraper] Haydovchiga xabar yuborish xatosi:', notifyErr.message);

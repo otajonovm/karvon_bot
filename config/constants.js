@@ -2,17 +2,21 @@ const REGIONS = ['Toshkent', 'Vodiy', 'Samarqand', 'Buxoro', 'Voha'];
 
 const CAR_TYPES = ['Labo/Damas', 'Gazel', 'Isuzu', 'Fura'];
 
-/** 8 ta asosiy shahar — haydovchi profili uchun */
-const DRIVER_CITIES = [
-  { slug: 'toshkent',  label: 'Toshkent',     region: 'Toshkent' },
-  { slug: 'fargona',   label: "Farg'ona",       region: 'Vodiy'    },
-  { slug: 'andijon',   label: 'Andijon',        region: 'Vodiy'    },
-  { slug: 'namangan',  label: 'Namangan',       region: 'Vodiy'    },
-  { slug: 'samarqand', label: 'Samarqand',      region: 'Samarqand'},
-  { slug: 'buxoro',    label: 'Buxoro',         region: 'Buxoro'   },
-  { slug: 'qashqa',    label: 'Qashqadaryo',   region: 'Voha'     },
-  { slug: 'surxon',    label: 'Surxondaryo',   region: 'Voha'     },
+/** Marshrut wizard — 6 ta asosiy viloyat markazi */
+const DRIVER_WIZARD_REGIONS = [
+  { slug: 'toshkent',  label: 'Toshkent'  },
+  { slug: 'fargona',   label: "Farg'ona"  },
+  { slug: 'andijon',   label: 'Andijon'   },
+  { slug: 'namangan',  label: 'Namangan'  },
+  { slug: 'samarqand', label: 'Samarqand' },
+  { slug: 'buxoro',    label: 'Buxoro'    },
 ];
+
+/** @deprecated — routeMatch uchun */
+const DRIVER_CITIES = DRIVER_WIZARD_REGIONS.map((r) => ({
+  ...r,
+  region: r.label === 'Toshkent' ? 'Toshkent' : r.label === 'Samarqand' ? 'Samarqand' : r.label === 'Buxoro' ? 'Buxoro' : 'Vodiy',
+}));
 
 /** Shahar label → REGIONS dagi region nomi */
 function cityLabelToRegion(label) {
@@ -22,8 +26,12 @@ function cityLabelToRegion(label) {
 
 /** Slug → display label */
 function citySlugToLabel(slug) {
-  const found = DRIVER_CITIES.find((c) => c.slug === slug);
+  const found = DRIVER_WIZARD_REGIONS.find((c) => c.slug === slug);
   return found?.label ?? slug;
+}
+
+function wizardSlugToLabel(slug) {
+  return citySlugToLabel(slug);
 }
 
 const ROLES = {
@@ -78,9 +86,11 @@ const CARGO_GROUPS = loadCargoGroups();
 module.exports = {
   REGIONS,
   CAR_TYPES,
+  DRIVER_WIZARD_REGIONS,
   DRIVER_CITIES,
   cityLabelToRegion,
   citySlugToLabel,
+  wizardSlugToLabel,
   ROLES,
   ORDER_STATUS,
   DRIVER_STATUS,

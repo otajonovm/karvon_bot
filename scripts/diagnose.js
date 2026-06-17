@@ -83,7 +83,7 @@ async function main() {
   dbOk &= line('users', await checkTable(supabase, 'users', 'id, phone, role'));
   dbOk &= line(
     'drivers (truck_type, status, is_verified)',
-    await checkTable(supabase, 'drivers', 'user_id, car_type, truck_type, status, is_verified, passport_file_id')
+    await checkTable(supabase, 'drivers', 'user_id, car_type, truck_type, from_region, to_region, truck_number, status, is_verified')
   );
   dbOk &= line(
     'orders (source_group, raw_text, notification_refs)',
