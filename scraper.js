@@ -16,7 +16,8 @@ const { notifyMatchingDrivers } = require('./lib/notifications');
 const { insertOrder, logSupabaseError } = require('./lib/orders');
 const { normalizePhone } = require('./lib/normalize');
 const { createTelegramAdapter } = require('./lib/botApi');
-const { CARGO_GROUPS } = require('./config/constants');
+const { CARGO_GROUPS, getRoyalCargoGroupId } = require('./config/constants');
+const { handleRoyalGroupMessageUserbot } = require('./lib/groupSecurity');
 const { setActiveClient, clearActiveClient } = require('./lib/userbotClient');
 
 // ─── Validate env ────────────────────────────────────────────────────────────
@@ -191,6 +192,13 @@ async function handleGroupMessage(message, groupLabel) {
   const msgKey = `${groupLabel}:${message.id}`;
   if (processedMsgKeys.has(msgKey)) return;
   processedMsgKeys.add(msgKey);
+
+  try {
+    const sender = await message.getSender();
+    if (sender?.bot) return;
+  } catch {
+    /* ignore */
+  }
 
   const text = extractMessageText(message);
   if (!text) {
@@ -425,12 +433,32 @@ async function runScraper() {
   }
 
   console.log(`[scraper] ${CARGO_GROUPS.length} ta guruh kuzatilmoqda.`);
+  const royalId = getRoyalCargoGroupId();
+  if (royalId) {
+    console.log(`[scraper] Rasmiy guruh moderatsiyasi (userbot): ${royalId}`);
+    try {
+      await client.getEntity(royalId);
+      console.log('[scraper] ✓ Rasmiy guruh userbot orqali ulandi');
+    } catch (err) {
+      console.error(`[scraper] ✗ Rasmiy guruh topilmadi (${royalId}):`, err.message);
+      console.error('[scraper]   → Userbot akkaunti guruhga qo\'shilgan va admin bo\'lishi kerak!');
+    }
+  }
 
   client.addEventHandler(async (event) => {
     try {
       const chatId =
         event.chatId?.toString() ||
         (event.message?.peerId ? utils.getPeerId(event.message.peerId).toString() : null);
+
+      if (chatId && getRoyalCargoGroupId()) {
+        const moderated = await handleRoyalGroupMessageUserbot(
+          client,
+          event.message,
+          notifyTelegram
+        );
+        if (moderated) return;
+      }
 
       if (!isAllowedChat(chatId, allowedIds)) return;
 

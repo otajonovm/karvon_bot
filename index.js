@@ -13,7 +13,7 @@ const {
   markOrderTakenForOthers,
   acceptOrder,
 } = require('./lib/notifications');
-const { insertOrder, insertBrokerOrder, getOrderById } = require('./lib/orders');
+const { insertOrder, insertBrokerOrder } = require('./lib/orders');
 const { normalizePhone } = require('./lib/normalize');
 const { REGIONS, CAR_TYPES, ROLES, DRIVER_STATUS, DRIVER_WIZARD_REGIONS, wizardSlugToLabel } = require('./config/constants');
 const {
@@ -35,8 +35,11 @@ const { getUserById, upsertUserPhone } = require('./lib/users');
 const { buildStatusMessage, ensureDriverRole } = require('./lib/statusPanel');
 const { ensureBroker } = require('./lib/brokers');
 const { findDriversForBroker, formatDriverList } = require('./lib/brokerMatching');
-const { crosspostOrder, crosspostToDm } = require('./lib/crosspost');
+const { crosspostToDm } = require('./lib/crosspost');
 const { getActiveClient } = require('./lib/userbotClient');
+const { handleRoyalGroupMessage } = require('./lib/groupSecurity');
+const { postOrderToRoyalGroup } = require('./lib/royalGroupPost');
+const { getRoyalCargoGroupId } = require('./config/constants');
 
 // ─── Validate env ────────────────────────────────────────────────────────────
 
@@ -52,6 +55,25 @@ if (missing.length) {
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const supabase = getSupabase();
+
+const royalGroupId = getRoyalCargoGroupId();
+if (royalGroupId) {
+  console.log(`[bot] Rasmiy guruh nazorati: ${royalGroupId}`);
+  console.log('[bot] Tavsiya: BotFather → /setprivacy → Disable (guruh xabarlarini ko\'rish)');
+} else {
+  console.warn('[bot] ROYAL_CARGO_GROUP_ID yo\'q — karvon.env ga qo\'shing!');
+}
+
+// Guruh xabarlari — doim faol (rasmiy guruh moderatsiyasi)
+bot.on('message', async (ctx, next) => {
+  try {
+    const handled = await handleRoyalGroupMessage(ctx);
+    if (handled) return;
+  } catch (err) {
+    console.error('[group-security] handler:', err.message);
+  }
+  return next();
+});
 
 // In-memory broker yuk joylash wizard
 const brokerSessions = new Map();
@@ -460,48 +482,74 @@ bot.action(/^brk_to_(.+)$/, async (ctx) => {
   );
 });
 
-bot.action(/^crosspost_(.+)$/, async (ctx) => {
-  const orderId = ctx.match[1];
+bot.action('brk_publish', async (ctx) => {
   const userId = ctx.from.id;
+  const session = brokerSessions.get(userId);
 
-  await ctx.answerCbQuery('Guruhlarga yuborilmoqda...');
+  if (!session || session.step !== 'confirm') {
+    return ctx.answerCbQuery('Avval yuk ma\'lumotlarini to\'ldiring');
+  }
+
+  await ctx.answerCbQuery('Guruhga joylanmoqda...');
 
   try {
-    const order = await getOrderById(orderId);
-    if (!order) {
-      return ctx.reply('Yuk topilmadi.');
-    }
-    if (order.broker_user_id && Number(order.broker_user_id) !== userId) {
-      return ctx.reply('Faqat o\'z yukingizni tarqatishingiz mumkin.');
+    const order = await insertBrokerOrder({
+      truck_type: session.truck_type,
+      from_region: session.from_region,
+      to_region: session.to_region,
+      cargo_details: session.cargo_details,
+      broker_phone: session.phone,
+      broker_user_id: userId,
+    });
+
+    clearBroker(userId);
+    await ctx.editMessageReplyMarkup({ inline_keyboard: [] }).catch(() => {});
+
+    const drivers = await findDriversForBroker({
+      truck_type: session.truck_type,
+      from_region: session.from_region,
+      to_region: session.to_region,
+    });
+
+    await notifyMatchingDrivers(ctx.telegram, order);
+
+    const dmClient = getActiveClient();
+    if (dmClient) {
+      crosspostToDm(dmClient, order).catch((err) => {
+        console.error('[crosspost_dm]', err.message);
+      });
     }
 
-    const client = getActiveClient();
-    if (!client) {
-      return ctx.reply(
-        '⚠️ Userbot hozir ulanmagan. 1-2 daqiqa kutib qayta urinib ko\'ring.'
+    const royal = await postOrderToRoyalGroup(ctx.telegram, order);
+
+    if (royal.ok) {
+      await ctx.reply(
+        '✅ Yukingiz rasmiy guruhga joylandi va mos haydovchilarga yuborildi!',
+        mainMenuKeyboard()
+      );
+    } else if (royal.error === 'ROYAL_CARGO_GROUP_ID_EMPTY') {
+      await ctx.reply(
+        "✅ Yuk saqlandi va haydovchilarga yuborildi.\n⚠️ ROYAL_CARGO_GROUP_ID sozlanmagan — guruhga chiqarilmadi.",
+        mainMenuKeyboard()
+      );
+    } else if (royal.error === 'ADMIN_RIGHTS_REQUIRED') {
+      await ctx.reply(
+        "✅ Yuk saqlandi va haydovchilarga yuborildi.\n⚠️ Bot guruhda admin emas — guruhga chiqarib bo'lmadi.",
+        mainMenuKeyboard()
+      );
+    } else {
+      await ctx.reply(
+        `✅ Yuk saqlandi va haydovchilarga yuborildi.\n⚠️ Guruhga chiqarishda xatolik: ${royal.error}`,
+        mainMenuKeyboard()
       );
     }
 
-    await ctx.editMessageReplyMarkup({ inline_keyboard: [] }).catch(() => {});
-
-    const result = await crosspostOrder(client, order);
-    console.log(`[crosspost] order=${orderId} sent=${result.sent} failed=${result.failed}`);
-
-    if (result.sent === 0) {
-      const detail = result.errors.length
-        ? '\n' + result.errors.map((e) => `• ${e.group}: ${e.error}`).join('\n')
-        : '';
-      return ctx.reply(`❌ Hech qanday guruhga yuborib bo'lmadi.${detail}`);
+    if (drivers.length > 0) {
+      await ctx.reply("✅ Mos bo'sh moshinalar:\n" + formatDriverList(drivers));
     }
-
-    const failNote = result.failed > 0 ? `\n⚠️ ${result.failed} ta guruhda xatolik bo'ldi.` : '';
-    await ctx.reply(`✅ Yuk ${result.sent} ta guruhga muvaffaqiyatli tarqatildi!${failNote}`);
   } catch (err) {
-    console.error('[crosspost]', err.message);
-    if (err.message === 'CROSSPOST_GROUPS_EMPTY') {
-      return ctx.reply('Tarqatish uchun guruhlar sozlanmagan (CARGO_GROUPS / CROSSPOST_GROUPS).');
-    }
-    await ctx.reply('Tarqatishda xatolik. Keyinroq qayta urinib ko\'ring.');
+    console.error('[brk_publish]', err.message);
+    await ctx.reply('Saqlashda xatolik. Qayta urinib ko\'ring.', mainMenuKeyboard());
   }
 });
 
@@ -517,7 +565,7 @@ async function requireDriver(ctx) {
   const profile = await getDriverProfile(ctx.from.id);
   if (!profile) {
     await ctx.reply(
-      'Avval haydovchi profilini sozlang — 「🚛 Yuk Izlash」 tugmasini bosing.',
+      'Avval haydovchi profilini sozlang — 「⛟ Yuk Izlash」 tugmasini bosing.',
       mainMenuKeyboard()
     );
     return false;
@@ -700,55 +748,26 @@ bot.on('text', async (ctx, next) => {
       return ctx.reply('Iltimos, yuk haqida batafsil yozing (turi, vazn, narx).');
     }
 
-    try {
-      const order = await insertBrokerOrder({
-        truck_type: brk.truck_type,
-        from_region: brk.from_region,
-        to_region: brk.to_region,
-        cargo_details: text,
-        broker_phone: brk.phone,
-        broker_user_id: userId,
-      });
+    brokerSessions.set(userId, {
+      ...brk,
+      step: 'confirm',
+      cargo_details: text,
+    });
 
-      clearBroker(userId);
-
-      const drivers = await findDriversForBroker({
-        truck_type: brk.truck_type,
-        from_region: brk.from_region,
-        to_region: brk.to_region,
-      });
-
-      await notifyMatchingDrivers(ctx.telegram, order);
-
-      const dmClient = getActiveClient();
-      if (dmClient) {
-        crosspostToDm(dmClient, order).catch((err) => {
-          console.error('[crosspost_dm]', err.message);
-        });
+    await ctx.reply(
+      '📋 <b>Yuk xulosasi</b>\n\n' +
+        `🚛 ${brk.truck_type}\n` +
+        `📍 ${brk.from_region} ➔ ${brk.to_region}\n` +
+        `📝 ${text}\n` +
+        `📞 ${brk.phone}\n\n` +
+        'Tasdiqlang — yuk rasmiy guruhga TEKIN chiqadi va haydovchilarga yuboriladi:',
+      {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback('🚀 Guruhga Tekin Chiqarish', 'brk_publish')],
+        ]),
       }
-
-      const crosspostKb = Markup.inlineKeyboard([
-        [Markup.button.callback('🚀 Guruhlarga tarqatish', `crosspost_${order.id}`)],
-      ]);
-
-      if (drivers.length > 0) {
-        await ctx.reply(
-          "✅ Yukingizga mos bo'sh moshinalar topildi:\n" +
-            formatDriverList(drivers) +
-            '\n\n👇 Telegram guruhlariga ham brending bilan tarqating:',
-          crosspostKb
-        );
-      } else {
-        await ctx.reply(
-          "✅ Yukingiz tizimga qo'shildi va shu yo'nalishdagi barcha haydovchilarga push-xabar yuborildi!\n\n" +
-            '👇 Telegram guruhlariga ham brending bilan tarqating:',
-          crosspostKb
-        );
-      }
-    } catch (err) {
-      console.error('[broker_order]', err.message);
-      await ctx.reply('Saqlashda xatolik. Qayta urinib ko\'ring.', mainMenuKeyboard());
-    }
+    );
     return;
   }
 

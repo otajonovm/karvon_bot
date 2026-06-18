@@ -92,13 +92,15 @@ function isGroupChatRef(ref) {
   return !/^\d+$/.test(s);
 }
 
-/** Cargo groups: karvon.env da CARGO_GROUPS=@guruh1,@guruh2 yoki shu yerga yozing */
+/** Cargo groups — ROYAL guruh scraper dan chiqariladi (bot boshqaradi) */
 function loadCargoGroups() {
+  const royal = (process.env.ROYAL_CARGO_GROUP_ID || '').trim();
   const fromEnv = (process.env.CARGO_GROUPS || '')
     .split(',')
     .map((g) => g.trim().replace(/^@/, ''))
     .filter(Boolean)
-    .filter(isGroupChatRef);
+    .filter(isGroupChatRef)
+    .filter((g) => !royal || g !== royal);
 
   const hardcoded = [
     // 'logistika_guruhi',
@@ -133,6 +135,14 @@ function loadCrosspostDmIds() {
 
 const CROSSPOST_DM_IDS = loadCrosspostDmIds();
 
+/** Rasmiy Karvon guruh — har safar env dan o'qiladi */
+function getRoyalCargoGroupId() {
+  return (process.env.ROYAL_CARGO_GROUP_ID || '').trim() || null;
+}
+
+const BOT_USERNAME = (process.env.BOT_USERNAME || 'karvongo_bot').replace(/^@/, '');
+const BOT_PUBLIC_URL = process.env.BOT_PUBLIC_URL || `https://t.me/${BOT_USERNAME}`;
+
 module.exports = {
   REGIONS,
   CANONICAL_CITIES,
@@ -150,4 +160,7 @@ module.exports = {
   CARGO_GROUPS,
   CROSSPOST_GROUPS,
   CROSSPOST_DM_IDS,
+  getRoyalCargoGroupId,
+  BOT_USERNAME,
+  BOT_PUBLIC_URL,
 };
