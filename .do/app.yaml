@@ -43,3 +43,6 @@ services:
       - key: NOTIFY_ALL_DRIVERS
         value: "1"
         scope: RUN_TIME
+      - key: SCRAPER_CONCURRENCY
+        value: "6"
+        scope: RUN_TIME

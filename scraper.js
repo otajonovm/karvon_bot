@@ -56,6 +56,29 @@ process.on('unhandledRejection', (reason) => {
 const processedMsgKeys = new Set();
 const liveStats = { processed: 0 };
 
+/** Bir vaqtda nechta xabar qayta ishlanishi (AI sekin — regex tez o'tkazadi) */
+const MAX_CONCURRENT = parseInt(process.env.SCRAPER_CONCURRENCY || '6', 10);
+const msgQueue = [];
+let queueDepth = 0;
+
+function scheduleMessage(message, groupLabel) {
+  msgQueue.push({ message, groupLabel });
+  drainMessageQueue();
+}
+
+function drainMessageQueue() {
+  while (queueDepth < MAX_CONCURRENT && msgQueue.length > 0) {
+    const { message, groupLabel } = msgQueue.shift();
+    queueDepth++;
+    handleGroupMessage(message, groupLabel)
+      .catch((err) => console.error('[scraper] Message xato:', err.message))
+      .finally(() => {
+        queueDepth--;
+        drainMessageQueue();
+      });
+  }
+}
+
 // ─── Session ─────────────────────────────────────────────────────────────────
 
 const { loadSession, saveSessionToFile } = require('./lib/session');
@@ -211,8 +234,12 @@ async function handleGroupMessage(message, groupLabel) {
   console.log(`[scraper] [${groupLabel}] ${preview}...`);
 
   let parsed;
+  let sender;
   try {
-    parsed = await parseCargoMessage(text);
+    [parsed, sender] = await Promise.all([
+      parseCargoMessage(text),
+      extractSenderMeta(message),
+    ]);
   } catch (err) {
     console.error('[scraper] AI parse error:', err.message);
     return;
@@ -228,8 +255,6 @@ async function handleGroupMessage(message, groupLabel) {
       `${parsed.car_type}, ${parsed.phone_number}`
   );
 
-  const sender = await extractSenderMeta(message);
-
   try {
     const order = await insertOrder({
       ...parsed,
@@ -243,13 +268,9 @@ async function handleGroupMessage(message, groupLabel) {
     if (!order) return;
 
     console.log(`[scraper] Bazaga saqlandi: order #${order.id}`);
-    try {
-      await notifyMatchingDrivers(notifyTelegram, order);
-    } catch (notifyErr) {
+    void notifyMatchingDrivers(notifyTelegram, order).catch((notifyErr) => {
       console.error('[scraper] Push xatosi:', notifyErr.message);
-    }
-
-    await new Promise((r) => setTimeout(r, 400));
+    });
   } catch (err) {
     if (err?.message) logSupabaseError('scraper.insertOrder', err);
     const rls = /row-level security/i.test(err?.message || '');
@@ -468,7 +489,7 @@ async function runScraper() {
         labels.get(chatId?.toString()) ||
         chatId;
 
-      await handleGroupMessage(event.message, label);
+      scheduleMessage(event.message, label);
     } catch (err) {
       console.error('[scraper] Handler error:', err.message);
     }
@@ -479,16 +500,16 @@ async function runScraper() {
     for (const { entity, label } of groupEntities) {
       try {
         const minId = lastSeenId.get(label) || 0;
-        const messages = await client.getMessages(entity, { limit: 3, minId: minId || undefined });
+        const messages = await client.getMessages(entity, { limit: 8, minId: minId || undefined });
         for (const msg of messages) {
           if (msg.id > minId) lastSeenId.set(label, msg.id);
-          if (extractMessageText(msg)) await handleGroupMessage(msg, label);
+          if (extractMessageText(msg)) scheduleMessage(msg, label);
         }
       } catch (err) {
         console.error(`[scraper] Poll xato (${label}):`, err.message);
       }
     }
-  }, 60_000);
+  }, 30_000);
 
   const statsTimer = setInterval(() => {
     if (!loopActive) return;
@@ -519,7 +540,7 @@ async function runScraper() {
     }
   }
 
-  console.log('[scraper] Doimiy kuzatuv aktiv (event + 60s poll zaxira)\n');
+  console.log('[scraper] Doimiy kuzatuv aktiv (event + 30s poll, parallel x' + MAX_CONCURRENT + ')\n');
 
   try {
     await watchConnection(client);
