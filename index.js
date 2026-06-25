@@ -10,6 +10,7 @@ const { Telegraf, Markup } = require('telegraf');
 const { getSupabase } = require('./lib/supabase');
 const {
   notifyMatchingDrivers,
+  pushRecentMatchingOrders,
   markOrderTakenForOthers,
   acceptOrder,
 } = require('./lib/notifications');
@@ -19,6 +20,7 @@ const { REGIONS, CAR_TYPES, ROLES, DRIVER_STATUS, DRIVER_WIZARD_REGIONS, wizardS
 const {
   BTN_POST_CARGO,
   BTN_FIND_CARGO,
+  BTN_FIND_CARGO_LEGACY,
   BTN_MY_STATUS,
   BTN_SEEKING,
   BTN_BUSY,
@@ -40,6 +42,10 @@ const { getActiveClient } = require('./lib/userbotClient');
 const { handleRoyalGroupMessage } = require('./lib/groupSecurity');
 const { postOrderToRoyalGroup } = require('./lib/royalGroupPost');
 const { getRoyalCargoGroupId } = require('./config/constants');
+const { isDbUnreachable, logDbError } = require('./lib/dbError');
+const { resolveSupabaseUrl } = require('./lib/supabase');
+
+console.log(`[bot] Supabase: ${resolveSupabaseUrl() || 'YO\'Q'}`);
 
 // ─── Validate env ────────────────────────────────────────────────────────────
 
@@ -95,6 +101,7 @@ const CAR_SLUG_MAP = {
 const MENU_BUTTONS = new Set([
   BTN_POST_CARGO,
   BTN_FIND_CARGO,
+  BTN_FIND_CARGO_LEGACY,
   BTN_MY_STATUS,
   BTN_SEEKING,
   BTN_BUSY,
@@ -138,6 +145,15 @@ function clearProfile(userId) {
 
 async function sendMainMenu(ctx, text) {
   await ctx.reply(text, { parse_mode: 'HTML', ...mainMenuKeyboard() });
+}
+
+async function replyDbUnavailable(ctx) {
+  return ctx.reply(
+    '⚠️ <b>Vaqtincha ulanish yo\'q</b>\n\n' +
+      'Baza (Supabase) ga ulanib bo\'lmadi. Internet/DNS ni tekshiring yoki VPN yoqing.\n' +
+      'Keyin qayta /start bosing.',
+    { parse_mode: 'HTML', ...mainMenuKeyboard() }
+  );
 }
 
 function clearBroker(userId) {
@@ -196,7 +212,14 @@ async function beginDriverProfileFlow(ctx) {
 
 bot.start(async (ctx) => {
   try {
-    const user = await getUserById(ctx.from.id);
+    let user;
+    try {
+      user = await getUserById(ctx.from.id);
+    } catch (err) {
+      logDbError('start', err);
+      if (isDbUnreachable(err)) return replyDbUnavailable(ctx);
+      throw err;
+    }
 
     if (user?.phone) {
       return sendMainMenu(
@@ -219,8 +242,9 @@ bot.start(async (ctx) => {
       }
     );
   } catch (err) {
-    console.error('[start]', err.message);
-    await ctx.reply('Xatolik yuz berdi. Qayta urinib ko\'ring.');
+    logDbError('start', err);
+    if (isDbUnreachable(err)) return replyDbUnavailable(ctx);
+    await ctx.reply('Xatolik yuz berdi. Qayta urinib ko\'ring.', mainMenuKeyboard());
   }
 });
 
@@ -268,16 +292,18 @@ bot.hears(BTN_POST_CARGO, async (ctx) => {
   try {
     await startBrokerFlow(ctx);
   } catch (err) {
-    console.error('[post_cargo]', err.message);
+    logDbError('post_cargo', err);
+    if (isDbUnreachable(err)) return replyDbUnavailable(ctx);
     await ctx.reply('Xatolik yuz berdi. Qayta urinib ko\'ring.', mainMenuKeyboard());
   }
 });
 
-bot.hears(BTN_FIND_CARGO, async (ctx) => {
+bot.hears([BTN_FIND_CARGO, BTN_FIND_CARGO_LEGACY], async (ctx) => {
   try {
     await beginDriverProfileFlow(ctx);
   } catch (err) {
-    console.error('[find_cargo]', err.message);
+    logDbError('find_cargo', err);
+    if (isDbUnreachable(err)) return replyDbUnavailable(ctx);
     await ctx.reply('Xatolik yuz berdi. Qayta urinib ko\'ring.', mainMenuKeyboard());
   }
 });
@@ -580,6 +606,13 @@ async function setDriverActive(ctx) {
     '🟢 <b>Yuk qidiryapman</b>\n\nYangi yuklar bo\'yicha bildirishnomalar yoqildi.',
     { parse_mode: 'HTML', ...mainMenuKeyboard() }
   );
+
+  try {
+    const driver = await getDriverProfile(ctx.from.id);
+    if (driver) await pushRecentMatchingOrders(ctx.telegram, driver);
+  } catch (err) {
+    console.error('[setDriverActive] recent push:', err.message);
+  }
 }
 
 async function setDriverBusy(ctx) {
@@ -778,7 +811,7 @@ bot.on('text', async (ctx, next) => {
     }
 
     try {
-      await upsertDriverProfile(userId, {
+      const driver = await upsertDriverProfile(userId, {
         truck_type: prof.car_type,
         from_region: prof.from_region,
         to_region: prof.to_region,
@@ -794,6 +827,18 @@ bot.on('text', async (ctx, next) => {
           "Safaringiz bexatar bo'lsin!",
         { parse_mode: 'HTML', ...mainMenuKeyboard() }
       );
+
+      try {
+        const sent = await pushRecentMatchingOrders(ctx.telegram, driver);
+        if (sent === 0) {
+          await ctx.reply(
+            'ℹ️ Hozircha bu yo\'nalishda yangi yuk yo\'q. ' +
+              'Yangi yuk paydo bo\'lishi bilan darhol shu yerga yuboraman.'
+          );
+        }
+      } catch (pushErr) {
+        console.error('[truck_number] recent push:', pushErr.message);
+      }
     } catch (err) {
       console.error('[truck_number]', err.message);
       await ctx.reply('Saqlashda xatolik. Qayta urinib ko\'ring.');

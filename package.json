@@ -13,7 +13,8 @@
     "test:groups": "node scripts/test-groups.js",
     "backfill": "node scripts/backfill.js",
     "stop": "node scripts/stop-karvon.js",
-    "verify:migrations": "node scripts/verify-migrations.js"
+    "verify:migrations": "node scripts/verify-migrations.js",
+    "test:supabase": "node scripts/test-supabase.js"
   },
   "engines": {
     "node": ">=18.0.0"

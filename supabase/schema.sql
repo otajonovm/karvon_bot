@@ -32,15 +32,9 @@ CREATE TABLE IF NOT EXISTS drivers (
 );
 
 -- Live driver geolocation per order (Phase 1)
-CREATE TABLE IF NOT EXISTS order_tracking (
-  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  order_id    UUID NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
-  latitude    DOUBLE PRECISION NOT NULL,
-  longitude   DOUBLE PRECISION NOT NULL,
-  updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+-- NOTE: orders jadvali avval yaratilishi kerak (setup_fresh.sql tartibiga qarang)
 
--- Cargo orders (from bot wizard or scraper)
+-- Cargo orders (from bot wizard or scraper) — order_tracking dan OLDIN
 CREATE TABLE IF NOT EXISTS orders (
   id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   from_region       TEXT NOT NULL,
@@ -60,6 +54,14 @@ CREATE TABLE IF NOT EXISTS orders (
   sender_telegram_id  BIGINT,
   notification_refs JSONB DEFAULT '[]'::jsonb,
   created_at        TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS order_tracking (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  order_id    UUID NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+  latitude    DOUBLE PRECISION NOT NULL,
+  longitude   DOUBLE PRECISION NOT NULL,
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_drivers_match ON drivers (car_type, preferred_route);

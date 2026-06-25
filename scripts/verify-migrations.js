@@ -69,7 +69,7 @@ async function main() {
 
   console.log('');
   if (!ok) {
-    console.error('→ supabase/migration_production_all.sql ni Supabase SQL Editor da ishga tushiring\n');
+    console.error('→ Yangi loyiha: supabase/setup_fresh.sql ni SQL Editor da ishga tushiring\n');
     process.exit(1);
   }
 
