@@ -37,3 +37,9 @@ services:
       - key: SCRAPER_START_DELAY_SEC
         value: "60"
         scope: RUN_TIME
+      - key: STRICT_FILTERS
+        value: "0"
+        scope: RUN_TIME
+      - key: NOTIFY_ALL_DRIVERS
+        value: "1"
+        scope: RUN_TIME

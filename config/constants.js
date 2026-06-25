@@ -143,6 +143,16 @@ function getRoyalCargoGroupId() {
 const BOT_USERNAME = (process.env.BOT_USERNAME || 'karvongo_bot').replace(/^@/, '');
 const BOT_PUBLIC_URL = process.env.BOT_PUBLIC_URL || `https://t.me/${BOT_USERNAME}`;
 
+/** STRICT_FILTERS=1 bo'lsa — qattiq spam/marshrut filtri. Default: yumshoq (ko'proq yuk o'tadi). */
+function isStrictFilters() {
+  return process.env.STRICT_FILTERS === '1';
+}
+
+/** Barcha faol haydovchilarga yuborish (marshrutdan qat'i nazar). Default: yoqilgan. */
+function notifyAllDrivers() {
+  return process.env.NOTIFY_ALL_DRIVERS !== '0';
+}
+
 module.exports = {
   REGIONS,
   CANONICAL_CITIES,
@@ -163,4 +173,6 @@ module.exports = {
   getRoyalCargoGroupId,
   BOT_USERNAME,
   BOT_PUBLIC_URL,
+  isStrictFilters,
+  notifyAllDrivers,
 };

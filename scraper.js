@@ -219,7 +219,7 @@ async function handleGroupMessage(message, groupLabel) {
   }
 
   if (!parsed) {
-    console.log('[scraper] O\'tkazib yuborildi (spam yoki noto\'g\'ri format)');
+    console.log(`[scraper] O'tkazib yuborildi (tahlil qilinmadi): ${preview}`);
     return;
   }
 
