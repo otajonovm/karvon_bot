@@ -44,6 +44,7 @@ const { postOrderToRoyalGroup } = require('./lib/royalGroupPost');
 const { getRoyalCargoGroupId } = require('./config/constants');
 const { isDbUnreachable, logDbError } = require('./lib/dbError');
 const { resolveSupabaseUrl } = require('./lib/supabase');
+const { markLaunched, markOk, markError } = require('./lib/botHealth');
 
 console.log(`[bot] Supabase: ${resolveSupabaseUrl() || 'YO\'Q'}`);
 
@@ -987,6 +988,38 @@ bot.catch((err, ctx) => {
   console.error(`[bot] Error for ${ctx?.updateType}:`, err.message);
 });
 
+// ─── Watchdog: bot tirikligini doimiy tekshiradi ────────────────────────────
+// getMe() bir necha marta ketma-ket muvaffaqiyatsiz bo'lsa, process'ni
+// to'xtatamiz — DigitalOcean konteynerni avtomat qayta ishga tushiradi.
+let watchdogStarted = false;
+function startBotWatchdog() {
+  if (watchdogStarted) return;
+  watchdogStarted = true;
+
+  const INTERVAL_MS = 120_000;
+  const MAX_FAILURES = 3;
+  let failures = 0;
+
+  const timer = setInterval(async () => {
+    try {
+      await bot.telegram.getMe();
+      markOk();
+      failures = 0;
+    } catch (err) {
+      failures += 1;
+      markError(err.message);
+      console.error(`[bot] Watchdog: getMe muvaffaqiyatsiz (${failures}/${MAX_FAILURES}) —`, err.message);
+
+      if (failures >= MAX_FAILURES) {
+        clearInterval(timer);
+        console.error('[bot] Watchdog: bot uzoq vaqt javob bermayapti — qayta ishga tushish uchun chiqilmoqda');
+        setTimeout(() => process.exit(1), 1000).unref();
+      }
+    }
+  }, INTERVAL_MS);
+  timer.unref();
+}
+
 (async () => {
   const { deleteWebhook } = require('./lib/botApi');
 
@@ -1006,6 +1039,8 @@ bot.catch((err, ctx) => {
           // 409 ba'zan callbackdan keyin keladi — qisqa kutamiz
           setTimeout(() => {
             console.log(`🚀 Karvon bot ishga tushdi — @${bot.botInfo?.username}`);
+            markLaunched();
+            startBotWatchdog();
             finish(null);
           }, 800);
         })
@@ -1040,6 +1075,12 @@ bot.catch((err, ctx) => {
 
 process.on('unhandledRejection', (err) => {
   console.error('[bot] Unhandled rejection:', err?.message || err);
+});
+
+// Kutilmagan sync xato process'ni o'ldirmasin — log qilamiz va davom etamiz.
+// Agar bot haqiqatan ishlamay qolsa, watchdog/health uni qayta ishga tushiradi.
+process.on('uncaughtException', (err) => {
+  console.error('[bot] Uncaught exception:', err?.message || err);
 });
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
