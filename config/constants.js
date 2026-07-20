@@ -148,9 +148,24 @@ function isStrictFilters() {
   return process.env.STRICT_FILTERS === '1';
 }
 
-/** Barcha faol haydovchilarga yuborish (marshrutdan qat'i nazar). Default: yoqilgan. */
+/** Barcha faol haydovchilarga yuborish (marshrutdan qat'i nazar). Default: O'CHIQ — faqat mos yo'nalish. */
 function notifyAllDrivers() {
-  return process.env.NOTIFY_ALL_DRIVERS !== '0';
+  return process.env.NOTIFY_ALL_DRIVERS === '1';
+}
+
+/** Admin Telegram ID lar (vergul bilan). Default: asosiy admin. */
+function getAdminIds() {
+  const raw = process.env.ADMIN_IDS || '7736700647';
+  return raw
+    .split(',')
+    .map((id) => id.trim())
+    .filter(Boolean)
+    .map((id) => Number(id))
+    .filter((n) => Number.isFinite(n));
+}
+
+function isAdmin(userId) {
+  return getAdminIds().includes(Number(userId));
 }
 
 module.exports = {
@@ -175,4 +190,6 @@ module.exports = {
   BOT_PUBLIC_URL,
   isStrictFilters,
   notifyAllDrivers,
+  getAdminIds,
+  isAdmin,
 };

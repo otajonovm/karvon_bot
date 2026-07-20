@@ -22,6 +22,7 @@ const {
   BTN_FIND_CARGO,
   BTN_FIND_CARGO_LEGACY,
   BTN_MY_STATUS,
+  BTN_ADMIN,
   BTN_SEEKING,
   BTN_BUSY,
   BTN_BACK_MAIN,
@@ -41,10 +42,11 @@ const { crosspostToDm } = require('./lib/crosspost');
 const { getActiveClient } = require('./lib/userbotClient');
 const { handleRoyalGroupMessage } = require('./lib/groupSecurity');
 const { postOrderToRoyalGroup } = require('./lib/royalGroupPost');
-const { getRoyalCargoGroupId } = require('./config/constants');
+const { getRoyalCargoGroupId, isAdmin } = require('./config/constants');
 const { isDbUnreachable, logDbError } = require('./lib/dbError');
 const { resolveSupabaseUrl } = require('./lib/supabase');
 const { markLaunched, markOk, markError } = require('./lib/botHealth');
+const { collectAdminStats, formatAdminPanel } = require('./lib/admin');
 
 console.log(`[bot] Supabase: ${resolveSupabaseUrl() || 'YO\'Q'}`);
 
@@ -104,6 +106,7 @@ const MENU_BUTTONS = new Set([
   BTN_FIND_CARGO,
   BTN_FIND_CARGO_LEGACY,
   BTN_MY_STATUS,
+  BTN_ADMIN,
   BTN_SEEKING,
   BTN_BUSY,
   BTN_BACK_MAIN,
@@ -145,7 +148,8 @@ function clearProfile(userId) {
 }
 
 async function sendMainMenu(ctx, text) {
-  await ctx.reply(text, { parse_mode: 'HTML', ...mainMenuKeyboard() });
+  const admin = isAdmin(ctx.from?.id);
+  await ctx.reply(text, { parse_mode: 'HTML', ...mainMenuKeyboard({ isAdmin: admin }) });
 }
 
 async function replyDbUnavailable(ctx) {
@@ -153,7 +157,7 @@ async function replyDbUnavailable(ctx) {
     '⚠️ <b>Vaqtincha ulanish yo\'q</b>\n\n' +
       'Baza (Supabase) ga ulanib bo\'lmadi. Internet/DNS ni tekshiring yoki VPN yoqing.\n' +
       'Keyin qayta /start bosing.',
-    { parse_mode: 'HTML', ...mainMenuKeyboard() }
+    { parse_mode: 'HTML', ...mainMenuKeyboard({ isAdmin: isAdmin(ctx.from?.id) }) }
   );
 }
 
@@ -312,11 +316,31 @@ bot.hears([BTN_FIND_CARGO, BTN_FIND_CARGO_LEGACY], async (ctx) => {
 bot.hears(BTN_MY_STATUS, async (ctx) => {
   try {
     const { text, hasProfile } = await buildStatusMessage(ctx.from.id);
-    const keyboard = hasProfile ? statusScreenKeyboard() : mainMenuKeyboard();
+    const keyboard = hasProfile
+      ? statusScreenKeyboard()
+      : mainMenuKeyboard({ isAdmin: isAdmin(ctx.from.id) });
     await ctx.reply(text, { parse_mode: 'HTML', ...keyboard });
   } catch (err) {
     console.error('[my_status]', err.message);
-    await ctx.reply("Holatni yuklab bo'lmadi.", mainMenuKeyboard());
+    await ctx.reply("Holatni yuklab bo'lmadi.", mainMenuKeyboard({ isAdmin: isAdmin(ctx.from.id) }));
+  }
+});
+
+bot.hears(BTN_ADMIN, async (ctx) => {
+  if (!isAdmin(ctx.from.id)) {
+    return ctx.reply('Bu bo‘lim faqat admin uchun.', mainMenuKeyboard());
+  }
+  try {
+    await ctx.reply('📊 Statistika yuklanmoqda...');
+    const stats = await collectAdminStats();
+    await ctx.reply(formatAdminPanel(stats), {
+      parse_mode: 'HTML',
+      ...mainMenuKeyboard({ isAdmin: true }),
+    });
+  } catch (err) {
+    console.error('[admin]', err.message);
+    if (isDbUnreachable(err)) return replyDbUnavailable(ctx);
+    await ctx.reply('Statistikani yuklab bo‘lmadi.', mainMenuKeyboard({ isAdmin: true }));
   }
 });
 
@@ -605,7 +629,7 @@ async function setDriverActive(ctx) {
   await setDriverStatus(ctx.from.id, DRIVER_STATUS.ACTIVE);
   await ctx.reply(
     '🟢 <b>Yuk qidiryapman</b>\n\nYangi yuklar bo\'yicha bildirishnomalar yoqildi.',
-    { parse_mode: 'HTML', ...mainMenuKeyboard() }
+    { parse_mode: 'HTML', ...mainMenuKeyboard({ isAdmin: isAdmin(ctx.from.id) }) }
   );
 
   try {
@@ -621,7 +645,7 @@ async function setDriverBusy(ctx) {
   await setDriverStatus(ctx.from.id, DRIVER_STATUS.BUSY);
   await ctx.reply(
     "🔴 <b>Yo'ldaman</b>\n\nYangi yuk bildirishnomalari to'xtatildi. Yetib borganingizda holatni o'zgartiring.",
-    { parse_mode: 'HTML', ...mainMenuKeyboard() }
+    { parse_mode: 'HTML', ...mainMenuKeyboard({ isAdmin: isAdmin(ctx.from.id) }) }
   );
 }
 
@@ -826,7 +850,7 @@ bot.on('text', async (ctx, next) => {
         `✅ Rahmat! Yo'nalish yoqildi: <b>${prof.from_region}</b> ➔ <b>${prof.to_region}</b>.\n` +
           'Tizim sizga faqat shu yo\'nalishdagi toza yuklarni shaxsiyingizga avtomat oqizib beradi. ' +
           "Safaringiz bexatar bo'lsin!",
-        { parse_mode: 'HTML', ...mainMenuKeyboard() }
+        { parse_mode: 'HTML', ...mainMenuKeyboard({ isAdmin: isAdmin(userId) }) }
       );
 
       try {
