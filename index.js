@@ -610,7 +610,7 @@ async function requireDriver(ctx) {
   const user = await getUserById(ctx.from.id);
   if (!user?.phone) {
     await ctx.reply('Avval /start orqali telefon raqamingizni ulashing.');
-    return false;
+    return null;
   }
 
   const profile = await getDriverProfile(ctx.from.id);
@@ -619,22 +619,40 @@ async function requireDriver(ctx) {
       'Avval haydovchi profilini sozlang — 「⛟ Yuk Izlash」 tugmasini bosing.',
       mainMenuKeyboard()
     );
-    return false;
+    return null;
   }
-  return true;
+  return profile;
 }
 
 async function setDriverActive(ctx) {
-  if (!(await requireDriver(ctx))) return;
+  const driver = await requireDriver(ctx);
+  if (!driver) return;
+
   await setDriverStatus(ctx.from.id, DRIVER_STATUS.ACTIVE);
   await ctx.reply(
-    '🟢 <b>Yuk qidiryapman</b>\n\nYangi yuklar bo\'yicha bildirishnomalar yoqildi.',
+    '🟢 <b>Yuk qidiryapman</b>\n\n' +
+      `Yo'nalish: <b>${driver.from_region}</b> → <b>${driver.to_region}</b> · ${driver.car_type || driver.truck_type}\n` +
+      "Bildirishnomalar yoqildi. Mos aktiv yuklar hozir yuboriladi…",
     { parse_mode: 'HTML', ...mainMenuKeyboard({ isAdmin: isAdmin(ctx.from.id) }) }
   );
 
   try {
-    const driver = await getDriverProfile(ctx.from.id);
-    if (driver) await pushRecentMatchingOrders(ctx.telegram, driver);
+    const sent = await pushRecentMatchingOrders(ctx.telegram, {
+      ...driver,
+      status: DRIVER_STATUS.ACTIVE,
+    });
+    if (sent > 0) {
+      await ctx.reply(
+        `✅ <b>${sent}</b> ta mos yuk yuborildi.\n` +
+          'Yangi yuklar kelishi bilan ham shu yerga tushadi.',
+        { parse_mode: 'HTML' }
+      );
+    } else {
+      await ctx.reply(
+        "ℹ️ Hozircha yo'nalishingizda aktiv yuk yo'q.\n" +
+          'Guruhlardan yangi mos yuk kelishi bilan darhol yuboraman.'
+      );
+    }
   } catch (err) {
     console.error('[setDriverActive] recent push:', err.message);
   }
