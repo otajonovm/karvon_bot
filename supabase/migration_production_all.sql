@@ -26,9 +26,19 @@ ALTER TABLE orders
   ADD COLUMN IF NOT EXISTS broker_phone    TEXT,
   ADD COLUMN IF NOT EXISTS broker_user_id  BIGINT REFERENCES users(id);
 
--- 4) Driver status (agar yo'q bo'lsa)
+-- 4) Driver status (agar yo'q bo'lsa) + inactive (bot blocked)
 ALTER TABLE drivers
   ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active';
+
+ALTER TABLE drivers DROP CONSTRAINT IF EXISTS drivers_status_check;
+ALTER TABLE drivers
+  ADD CONSTRAINT drivers_status_check
+  CHECK (status IN ('active', 'busy', 'inactive'));
+
+CREATE INDEX IF NOT EXISTS idx_drivers_status ON drivers (status);
+CREATE INDEX IF NOT EXISTS idx_drivers_active_route
+  ON drivers (status, from_region, to_region, truck_type)
+  WHERE status = 'active';
 
 -- 5) Scraper dedup index (agar yo'q bo'lsa)
 CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_scraper_dedup

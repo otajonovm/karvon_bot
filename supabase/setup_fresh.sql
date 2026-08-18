@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS drivers (
   from_region       TEXT,
   to_region         TEXT,
   truck_number      TEXT,
-  status            TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'busy')),
+  status            TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'busy', 'inactive')),
   is_verified       BOOLEAN NOT NULL DEFAULT false,
   passport_file_id  TEXT,
   updated_at        TIMESTAMPTZ DEFAULT NOW()
@@ -69,6 +69,9 @@ CREATE TABLE IF NOT EXISTS order_tracking (
 -- Indekslar
 CREATE INDEX IF NOT EXISTS idx_drivers_match ON drivers (car_type, preferred_route);
 CREATE INDEX IF NOT EXISTS idx_drivers_status ON drivers (status);
+CREATE INDEX IF NOT EXISTS idx_drivers_active_route
+  ON drivers (status, from_region, to_region, truck_type)
+  WHERE status = 'active';
 CREATE INDEX IF NOT EXISTS idx_drivers_route_match ON drivers (from_region, to_region, car_type);
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders (status);
 CREATE INDEX IF NOT EXISTS idx_orders_route ON orders (from_region, to_region, car_type);

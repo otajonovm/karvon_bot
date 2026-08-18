@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS drivers (
   from_region       TEXT,
   to_region         TEXT,
   truck_number      TEXT,
-  status            TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'busy')),
+  status            TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'busy', 'inactive')),
   is_verified       BOOLEAN NOT NULL DEFAULT false,
   passport_file_id  TEXT,
   updated_at        TIMESTAMPTZ DEFAULT NOW()

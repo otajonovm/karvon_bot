@@ -61,6 +61,7 @@ const ORDER_STATUS = {
 const DRIVER_STATUS = {
   ACTIVE: 'active',
   BUSY: 'busy',
+  INACTIVE: 'inactive',
 };
 
 /** All directed region pairs (from !== to) for driver route selection */

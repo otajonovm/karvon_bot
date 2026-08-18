@@ -556,13 +556,16 @@ bot.action('brk_publish', async (ctx) => {
     clearBroker(userId);
     await ctx.editMessageReplyMarkup({ inline_keyboard: [] }).catch(() => {});
 
-    const drivers = await findDriversForBroker({
-      truck_type: session.truck_type,
-      from_region: session.from_region,
-      to_region: session.to_region,
-    });
+    const pushOrder = {
+      ...order,
+      truck_type: session.truck_type || order.car_type,
+      phone: session.phone || order.phone_number,
+    };
 
-    await notifyMatchingDrivers(ctx.telegram, order);
+    // Yuk yozilishi bilan darhol mos haydovchilarga push (guruh/royxatni kutmaydi)
+    void notifyMatchingDrivers(ctx.telegram, pushOrder).catch((err) => {
+      console.error('[push-engine] broker push:', err.message);
+    });
 
     const dmClient = getActiveClient();
     if (dmClient) {
@@ -571,7 +574,14 @@ bot.action('brk_publish', async (ctx) => {
       });
     }
 
-    const royal = await postOrderToRoyalGroup(ctx.telegram, order);
+    const [drivers, royal] = await Promise.all([
+      findDriversForBroker({
+        truck_type: session.truck_type,
+        from_region: session.from_region,
+        to_region: session.to_region,
+      }),
+      postOrderToRoyalGroup(ctx.telegram, order),
+    ]);
 
     if (royal.ok) {
       await ctx.reply(
@@ -950,7 +960,13 @@ bot.action('wiz_confirm', async (ctx) => {
     await ctx.answerCbQuery('Buyurtma joylandi!');
     await ctx.editMessageText('✅ Buyurtmangiz tizimga chiqarildi! Haydovchilar tez orada bog\'lanadi.');
 
-    await notifyMatchingDrivers(ctx.telegram, order);
+    void notifyMatchingDrivers(ctx.telegram, {
+      ...order,
+      truck_type: order.truck_type || order.car_type,
+      phone: order.phone_number,
+    }).catch((err) => {
+      console.error('[push-engine] wizard push:', err.message);
+    });
   } catch (err) {
     console.error('[wiz_confirm]', err.message);
     await ctx.answerCbQuery('Xatolik yuz berdi');

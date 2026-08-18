@@ -267,9 +267,13 @@ async function handleGroupMessage(message, groupLabel) {
 
     if (!order) return;
 
-    console.log(`[scraper] Bazaga saqlandi: order #${order.id}`);
-    void notifyMatchingDrivers(notifyTelegram, order).catch((notifyErr) => {
-      console.error('[scraper] Push xatosi:', notifyErr.message);
+    console.log(`[scraper] Bazaga saqlandi: order #${order.id} — instant push`);
+    void notifyMatchingDrivers(notifyTelegram, {
+      ...order,
+      truck_type: order.truck_type || order.car_type,
+      phone: order.phone_number,
+    }).catch((notifyErr) => {
+      console.error('[push-engine] scraper push:', notifyErr.message);
     });
   } catch (err) {
     if (err?.message) logSupabaseError('scraper.insertOrder', err);
