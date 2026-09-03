@@ -47,6 +47,13 @@ const { isDbUnreachable, logDbError } = require('./lib/dbError');
 const { resolveSupabaseUrl } = require('./lib/supabase');
 const { markLaunched, markOk, markError } = require('./lib/botHealth');
 const { collectAdminStats, formatAdminPanel } = require('./lib/admin');
+const { isOrderActive } = require('./lib/orders');
+const {
+  scheduleFeedback,
+  confirmDeal,
+  rejectDeal,
+  startFeedbackLoop,
+} = require('./lib/dealFeedback');
 
 console.log(`[bot] Supabase: ${resolveSupabaseUrl() || 'YO\'Q'}`);
 
@@ -981,16 +988,32 @@ bot.action(/^accept_order_(.+)$/, async (ctx) => {
       return ctx.answerCbQuery('Faqat haydovchilar yuk olishi mumkin');
     }
 
+    // Expired tekshiruv
+    const { active, reason } = await isOrderActive(orderId);
+    if (!active) {
+      const msg =
+        reason === 'taken'
+          ? 'Bu yuk allaqachon olingan!'
+          : 'Kechirasiz, ushbu yuk muddati tugagan yoki allaqachon olib ketilgan.';
+      await ctx.answerCbQuery(msg, { show_alert: true });
+      await ctx.editMessageReplyMarkup(
+        Markup.inlineKeyboard([
+          Markup.button.callback('🔴 Yuk olindi / Muddati o\'tgan', 'order_taken'),
+        ]).reply_markup
+      ).catch(() => {});
+      return;
+    }
+
     const result = await acceptOrder(orderId, driverId);
 
     if (!result.success) {
       if (result.reason === 'already_taken') {
-        await ctx.answerCbQuery('Bu yuk allaqachon olingan!');
+        await ctx.answerCbQuery('Bu yuk allaqachon olingan!', { show_alert: true });
         await ctx.editMessageReplyMarkup(
           Markup.inlineKeyboard([
             Markup.button.callback('🔴 Yuk olindi', 'order_taken'),
           ]).reply_markup
-        );
+        ).catch(() => {});
       } else {
         await ctx.answerCbQuery('Buyurtma topilmadi');
       }
@@ -1001,14 +1024,53 @@ bot.action(/^accept_order_(.+)$/, async (ctx) => {
 
     await ctx.answerCbQuery('Yuk sizga biriktirildi!');
     await ctx.editMessageText(
-      ctx.callbackQuery.message.text + `\n\n✅ <b>Siz oldingiz!</b>\n📞 Mijoz: ${order.phone_number}`,
+      ctx.callbackQuery.message.text +
+        `\n\n✅ <b>Siz oldingiz!</b>\n📞 Mijoz: ${order.phone_number}`,
       { parse_mode: 'HTML' }
     );
 
     await markOrderTakenForOthers(ctx.telegram, order, driverId);
+
+    // 30 daqiqadan so'ng "kelishdingizmi?" feedback yuboriladi
+    scheduleFeedback(orderId, driverId).catch(() => {});
   } catch (err) {
     console.error('[accept_order]', err.message);
     await ctx.answerCbQuery('Xatolik yuz berdi');
+  }
+});
+
+// ─── Deal feedback callbacks ─────────────────────────────────────────────────
+
+bot.action(/^deal_success_(.+)$/, async (ctx) => {
+  const orderId = ctx.match[1];
+  const driverId = ctx.from.id;
+  try {
+    await ctx.answerCbQuery('Tabriklaymiz! Muvaffaqiyatli reys!');
+    await confirmDeal(orderId, driverId);
+    await ctx.editMessageText(
+      ctx.callbackQuery.message.text +
+        '\n\n🤝 <b>Muvaffaqiyatli reys qayd etildi. Yo\'lda omon bo\'ling!</b>',
+      { parse_mode: 'HTML' }
+    );
+  } catch (err) {
+    console.error('[deal_success]', err.message);
+    await ctx.answerCbQuery('Xatolik');
+  }
+});
+
+bot.action(/^deal_failed_(.+)$/, async (ctx) => {
+  const orderId = ctx.match[1];
+  const driverId = ctx.from.id;
+  try {
+    await ctx.answerCbQuery('Tushunarli. Keyingi safar omad!');
+    await rejectDeal(orderId, driverId);
+    await ctx.editMessageText(
+      ctx.callbackQuery.message.text + '\n\n❌ Kelishilmadi.',
+      { parse_mode: 'HTML' }
+    );
+  } catch (err) {
+    console.error('[deal_failed]', err.message);
+    await ctx.answerCbQuery('Xatolik');
   }
 });
 
@@ -1083,6 +1145,8 @@ function startBotWatchdog() {
             console.log(`🚀 Karvon bot ishga tushdi — @${bot.botInfo?.username}`);
             markLaunched();
             startBotWatchdog();
+            // "Kelishdingizmi?" feedback loop (har 2 daqiqa)
+            startFeedbackLoop(bot.telegram);
             finish(null);
           }, 800);
         })

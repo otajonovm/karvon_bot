@@ -7,6 +7,7 @@ require('./config/env');
 const { validateEnv, printEnvHelp } = require('./lib/validateEnv');
 const { startHealthServer } = require('./lib/healthServer');
 const { startScraperLoop, stopScraperLoop } = require('./scraper');
+const { startExpiryLoop, stopExpiryLoop } = require('./lib/orderExpiry');
 
 const { loadSession, sessionDiagnostics } = require('./lib/session');
 
@@ -43,6 +44,9 @@ process.env.KARVON_COMBINED = '1';
 
 require('./index.js');
 
+// TTL expiry engine (har 15 daqiqa)
+startExpiryLoop();
+
 console.log('[karvon] Scraper qismi ishga tushirilmoqda (bot bilan bir processda)...');
 startScraperLoop().catch((err) => {
   console.error('[karvon] Scraper loop xatosi:', err.message);
@@ -51,6 +55,13 @@ startScraperLoop().catch((err) => {
 async function gracefulShutdown(signal) {
   console.log(`\n[karvon] ${signal} — to'xtatilmoqda...`);
   stopScraperLoop();
+  stopExpiryLoop();
+  try {
+    const { stopFeedbackLoop } = require('./lib/dealFeedback');
+    stopFeedbackLoop();
+  } catch {
+    /* ignore */
+  }
   try {
     const { deleteWebhook } = require('./lib/botApi');
     await deleteWebhook();
