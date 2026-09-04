@@ -14,6 +14,12 @@ const REGIONS = CANONICAL_CITIES;
 
 const CAR_TYPES = ['Labo/Damas', 'Gazel', 'Isuzu', 'Fura'];
 
+const BODY_TYPES = [
+  { slug: 'tent', label: 'Tent', emoji: '⛺' },
+  { slug: 'ref', label: 'Refrijerator', emoji: '❄️' },
+  { slug: 'bort', label: 'Butka/Bort', emoji: '📦' },
+];
+
 /** Marshrut wizard — 8 ta viloyat */
 const DRIVER_WIZARD_REGIONS = [
   { slug: 'toshkent',  label: 'Toshkent'     },
@@ -173,6 +179,7 @@ module.exports = {
   REGIONS,
   CANONICAL_CITIES,
   CAR_TYPES,
+  BODY_TYPES,
   DRIVER_WIZARD_REGIONS,
   DRIVER_CITIES,
   cityLabelToRegion,

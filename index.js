@@ -17,7 +17,7 @@ const {
 } = require('./lib/notifications');
 const { insertOrder, insertBrokerOrder } = require('./lib/orders');
 const { normalizePhone } = require('./lib/normalize');
-const { REGIONS, CAR_TYPES, ROLES, DRIVER_STATUS, DRIVER_WIZARD_REGIONS, wizardSlugToLabel } = require('./config/constants');
+const { REGIONS, CAR_TYPES, BODY_TYPES, ROLES, DRIVER_STATUS, DRIVER_WIZARD_REGIONS, wizardSlugToLabel } = require('./config/constants');
 const {
   BTN_POST_CARGO,
   BTN_FIND_CARGO,
@@ -32,6 +32,8 @@ const {
   mainMenuKeyboard,
   statusScreenKeyboard,
   driverCarKeyboard,
+  driverBodyKeyboard,
+  driverNameKeyboard,
   driverRegionKeyboard,
   driverRoutePresetKeyboard,
   cabinetInlineKeyboard,
@@ -53,7 +55,8 @@ const { isDbUnreachable, logDbError } = require('./lib/dbError');
 const { resolveSupabaseUrl } = require('./lib/supabase');
 const { markLaunched, markOk, markError } = require('./lib/botHealth');
 const { collectAdminStats, formatAdminPanel } = require('./lib/admin');
-const { ANY_DEST, buildSaveFields, regionBySlug, formatRouteLabel, ROUTE_PRESETS } = require('./lib/driverRoutes');
+const { ANY_DEST, buildSaveFields, regionBySlug, formatRouteLabel } = require('./lib/driverRoutes');
+const { formatDriverCard, telegramDisplayName } = require('./lib/driverCard');
 const { isOrderActive, EXPIRED_USER_MSG } = require('./lib/orders');
 const {
   scheduleFeedback,
@@ -163,18 +166,27 @@ function clearProfile(userId) {
   profileSessions.delete(userId);
 }
 
+const STATUS_TOAST = 'Holatingiz yangilandi!';
+
+const BODY_SLUG_MAP = Object.fromEntries(BODY_TYPES.map((b) => [b.slug, b.label]));
+
 async function replyCabinet(ctx, { edit = false } = {}) {
-  const { text, hasProfile } = await buildStatusMessage(ctx.from.id);
-  const opts = {
-    parse_mode: 'HTML',
-    ...(hasProfile ? cabinetInlineKeyboard() : {}),
-  };
-  if (edit && ctx.callbackQuery?.message) {
-    await ctx.editMessageText(text, opts);
+  try {
+    const { text, hasProfile, profile } = await buildStatusMessage(ctx.from.id);
+    const opts = {
+      parse_mode: 'HTML',
+      ...(hasProfile ? cabinetInlineKeyboard(profile) : {}),
+    };
+    if (edit && ctx.callbackQuery?.message) {
+      await ctx.editMessageText(text, opts);
+      return hasProfile;
+    }
+    await ctx.reply(text, opts);
     return hasProfile;
+  } catch (err) {
+    console.error('[cabinet]', err.message);
+    throw err;
   }
-  await ctx.reply(text, opts);
-  return hasProfile;
 }
 
 async function persistSessionRoute(userId, session, extra = {}) {
@@ -184,10 +196,144 @@ async function persistSessionRoute(userId, session, extra = {}) {
     current_location: session.current_location || session.from_region,
     dest: session.to_region,
     truck_type: extra.truck_type || session.car_type || existing?.truck_type,
-    truck_number: extra.truck_number || existing?.truck_number,
+    truck_number: extra.truck_number || session.truck_number || existing?.truck_number,
     status: extra.status || existing?.status || DRIVER_STATUS.ACTIVE,
   });
-  return upsertDriverProfile(userId, fields);
+  return upsertDriverProfile(userId, {
+    ...fields,
+    full_name: extra.full_name || session.full_name || existing?.full_name,
+    body_type: extra.body_type || session.body_type || existing?.body_type,
+    is_verified: true,
+    rating: existing?.rating ?? 5.0,
+    completed_trips: existing?.completed_trips ?? 0,
+  });
+}
+
+async function editWizard(ctx, session, text, extra = {}) {
+  const opts = { parse_mode: 'HTML', ...extra };
+  try {
+    if (ctx.callbackQuery?.message) {
+      await ctx.editMessageText(text, opts);
+      session.chatId = ctx.chat.id;
+      session.messageId = ctx.callbackQuery.message.message_id;
+      return;
+    }
+    if (session.chatId && session.messageId) {
+      await ctx.telegram.editMessageText(session.chatId, session.messageId, undefined, text, opts);
+      return;
+    }
+  } catch (err) {
+    console.warn('[wizard] edit:', err.message);
+  }
+  const sent = await ctx.reply(text, opts);
+  session.chatId = sent.chat.id;
+  session.messageId = sent.message_id;
+}
+
+function rememberWizard(userId, session) {
+  profileSessions.set(userId, session);
+  return session;
+}
+
+async function askDriverName(ctx, session) {
+  const tgName = telegramDisplayName(ctx.from);
+  const next = rememberWizard(ctx.from.id, { ...session, step: 'full_name' });
+  await editWizard(
+    ctx,
+    next,
+    '🪪 <b>Haydovchi guvohnomasi</b>\n\n' +
+      '👤 Ism-familiyangizni yozing yoki Telegram ismingizni tanlang.',
+    driverNameKeyboard(tgName)
+  );
+}
+
+async function askDriverCar(ctx, session) {
+  const next = rememberWizard(ctx.from.id, { ...session, step: 'car_type' });
+  await editWizard(
+    ctx,
+    next,
+    `👤 <b>${session.full_name || telegramDisplayName(ctx.from)}</b>\n\n🚚 Mashina turini tanlang:`,
+    driverCarKeyboard()
+  );
+}
+
+async function askDriverBody(ctx, session) {
+  const next = rememberWizard(ctx.from.id, { ...session, step: 'body_type' });
+  await editWizard(
+    ctx,
+    next,
+    `Moshina: <b>${session.car_type}</b>\n\n📦 Kuzov turini tanlang:`,
+    driverBodyKeyboard()
+  );
+}
+
+async function askDriverPlate(ctx, session) {
+  const next = rememberWizard(ctx.from.id, {
+    ...session,
+    step: 'truck_number',
+    chatId: ctx.chat?.id || session.chatId,
+    messageId: ctx.callbackQuery?.message?.message_id || session.messageId,
+  });
+  await editWizard(
+    ctx,
+    next,
+    `Moshina: <b>${session.car_type}</b> · ${session.body_type || ''}\n\n` +
+      '📝 Mashina davlat raqamini kiriting:\n' +
+      '<i>(Misol: 01 A 777 AA)</i>',
+    { reply_markup: { inline_keyboard: [] } }
+  );
+}
+
+async function askDriverLocation(ctx, session) {
+  const next = rememberWizard(ctx.from.id, { ...session, step: 'location' });
+  await editWizard(
+    ctx,
+    next,
+    `Moshina: <b>${session.car_type}</b> · <code>${session.truck_number || ''}</code>\n\n` +
+      '📍 Hozir qaysi viloyatdasiz?',
+    driverRegionKeyboard('drv_loc')
+  );
+}
+
+async function askDriverRoute(ctx, session) {
+  const next = rememberWizard(ctx.from.id, { ...session, step: 'route_preset' });
+  await editWizard(
+    ctx,
+    next,
+    `📍 Joylashuv: <b>${session.current_location || session.from_region}</b>\n\n` +
+      "🔄 Qatnaydigan asosiy yo'nalish:",
+    driverRoutePresetKeyboard()
+  );
+}
+
+async function finishDriverWizard(ctx, session, extra = {}) {
+  const userId = ctx.from.id;
+  const driver = await persistSessionRoute(userId, session, extra);
+  clearProfile(userId);
+  const user = await getUserById(userId);
+  const text = formatDriverCard(driver, user);
+  try {
+    if (ctx.callbackQuery?.message) {
+      await ctx.editMessageText(text, {
+        parse_mode: 'HTML',
+        ...cabinetInlineKeyboard(driver),
+      });
+    } else {
+      await ctx.reply(text, {
+        parse_mode: 'HTML',
+        ...cabinetInlineKeyboard(driver),
+      });
+    }
+  } catch (err) {
+    console.error('[wizard] card:', err.message);
+    await ctx.reply(text, { parse_mode: 'HTML', ...cabinetInlineKeyboard(driver) });
+  }
+  try {
+    await pushRecentMatchingOrders(ctx.telegram, driver);
+  } catch (pushErr) {
+    console.error('[wizard] recent push:', pushErr.message);
+  }
+  return driver;
 }
 
 async function sendMainMenu(ctx, text) {
@@ -247,10 +393,17 @@ async function beginDriverProfileFlow(ctx) {
   }
 
   await ensureDriverRole(userId);
-
-  const sent = await ctx.reply('Moshina turi:', driverCarKeyboard());
+  const existing = await getDriverProfile(userId);
+  const tgName = telegramDisplayName(ctx.from);
+  const sent = await ctx.reply(
+    '🪪 <b>Haydovchi guvohnomasi</b>\n\n' +
+      '👤 Ism-familiyangizni yozing yoki Telegram ismingizni tanlang.',
+    { parse_mode: 'HTML', ...driverNameKeyboard(tgName) }
+  );
   profileSessions.set(userId, {
-    step: 'car_type',
+    step: 'full_name',
+    mode: 'onboarding',
+    full_name: existing?.full_name || null,
     chatId: sent.chat.id,
     messageId: sent.message_id,
   });
@@ -469,72 +622,86 @@ bot.command('profile', async (ctx) => {
   }
 });
 
-// ─── Driver profile wizard (4 qadam, bitta xabar edit) ───────────────────────
+// ─── Driver profile wizard ───────────────────────────────────────────────────
+
+bot.action('drv_name_tg', async (ctx) => {
+  try {
+    const session = profileSessions.get(ctx.from.id) || { mode: 'onboarding' };
+    const full_name = telegramDisplayName(ctx.from);
+    await ctx.answerCbQuery();
+    await askDriverCar(ctx, { ...session, full_name });
+  } catch (err) {
+    console.error('[drv_name_tg]', err.message);
+    await ctx.answerCbQuery('Xatolik');
+  }
+});
 
 bot.action(/^drv_car_(.+)$/, async (ctx) => {
   const carType = CAR_SLUG_MAP[ctx.match[1]];
   if (!carType) return ctx.answerCbQuery('Noto\'g\'ri tanlov');
 
   try {
-    const userId = ctx.from.id;
-    const session = profileSessions.get(userId) || {};
-    profileSessions.set(userId, { ...session, step: 'route_preset', car_type: carType });
-
+    const session = profileSessions.get(ctx.from.id) || {
+      mode: 'onboarding',
+      full_name: telegramDisplayName(ctx.from),
+    };
     await ctx.answerCbQuery();
-    await ctx.editMessageText(
-      `Moshina turi: <b>${carType}</b>\n\n` +
-        '🔄 Qaysi yo\'nalishlarda ishlaysiz?',
-      { parse_mode: 'HTML', ...driverRoutePresetKeyboard() }
-    );
+    await askDriverBody(ctx, { ...session, car_type: carType });
   } catch (err) {
     console.error('[drv_car]', err.message);
     await ctx.answerCbQuery('Xatolik');
   }
 });
 
-async function askTruckNumber(ctx, session) {
-  const userId = ctx.from.id;
-  profileSessions.set(userId, {
-    ...session,
-    step: 'truck_number',
-    chatId: ctx.chat.id,
-    messageId: ctx.callbackQuery.message.message_id,
-  });
-  const routeHint =
-    session.presetId && ROUTE_PRESETS[session.presetId]
-      ? ROUTE_PRESETS[session.presetId].short
-      : `${session.current_location || session.from_region} ➔ ${
-          session.to_region === ANY_DEST ? 'istalgan viloyat' : session.to_region || '—'
-        }`;
-  await ctx.editMessageText(
-    `Moshina: <b>${session.car_type}</b>\n` +
-      `Yo'nalish: <b>${routeHint}</b>\n\n` +
-      '📝 Mashinangiz davlat raqamini kiriting:\n' +
-      '<i>(Misol: 01 A 123 AA)</i>',
-    { parse_mode: 'HTML', reply_markup: { inline_keyboard: [] } }
-  );
-}
+bot.action(/^drv_body_(.+)$/, async (ctx) => {
+  const bodyType = BODY_SLUG_MAP[ctx.match[1]];
+  if (!bodyType) return ctx.answerCbQuery("Noto'g'ri kuzov");
+
+  try {
+    const session = profileSessions.get(ctx.from.id);
+    if (!session?.car_type) return ctx.answerCbQuery('Avval mashina turini tanlang');
+    await ctx.answerCbQuery();
+    await askDriverPlate(ctx, { ...session, body_type: bodyType });
+  } catch (err) {
+    console.error('[drv_body]', err.message);
+    await ctx.answerCbQuery('Xatolik');
+  }
+});
 
 bot.action(/^drv_rt_(all|vodiy|sam|south|custom)$/, async (ctx) => {
   const presetId = ctx.match[1];
-  const userId = ctx.from.id;
-  const session = profileSessions.get(userId);
+  const session = profileSessions.get(ctx.from.id);
   if (!session?.car_type) return ctx.answerCbQuery('Avval mashina turini tanlang');
 
   try {
     if (presetId === 'custom') {
-      profileSessions.set(userId, { ...session, step: 'from_region', presetId: 'custom' });
       await ctx.answerCbQuery();
-      await ctx.editMessageText(
-        `Moshina: <b>${session.car_type}</b>\n\n📍 <b>Hozir qaysi viloyatdasiz?</b>`,
-        { parse_mode: 'HTML', ...driverRegionKeyboard('drv_loc') }
+      if (!session.current_location && !session.from_region) {
+        await askDriverLocation(ctx, { ...session, presetId: 'custom' });
+        return;
+      }
+      const next = rememberWizard(ctx.from.id, { ...session, step: 'to_region', presetId: 'custom' });
+      await editWizard(
+        ctx,
+        next,
+        `📍 Hozir: <b>${session.current_location || session.from_region || '—'}</b>\n\n` +
+          '🏁 Qayerga qatnaysiz?',
+        driverRegionKeyboard('drv_dest', {
+          extra: [[Markup.button.callback('🌍 Istalgan viloyatga', 'drv_dest_any')]],
+        })
       );
       return;
     }
 
-    profileSessions.set(userId, { ...session, presetId, step: 'truck_number' });
+    const next = { ...session, presetId };
+    if (session.truck_number || session.current_location) {
+      await ctx.answerCbQuery(STATUS_TOAST, { show_alert: true });
+      await finishDriverWizard(ctx, next);
+      return;
+    }
+
     await ctx.answerCbQuery();
-    await askTruckNumber(ctx, { ...session, presetId });
+    await askDriverPlate(ctx, next);
   } catch (err) {
     console.error('[drv_rt]', err.message);
     await ctx.answerCbQuery('Xatolik');
@@ -542,32 +709,30 @@ bot.action(/^drv_rt_(all|vodiy|sam|south|custom)$/, async (ctx) => {
 });
 
 bot.action(/^drv_loc_(.+)$/, async (ctx) => {
-  const slug = ctx.match[1];
-  const region = regionBySlug(slug);
-  if (!region) return ctx.answerCbQuery('Noto\'g\'ri viloyat');
-  const userId = ctx.from.id;
-  const session = profileSessions.get(userId);
+  const region = regionBySlug(ctx.match[1]);
+  if (!region) return ctx.answerCbQuery("Noto'g'ri viloyat");
+  const session = profileSessions.get(ctx.from.id);
   if (!session?.car_type) return ctx.answerCbQuery('Avval mashina turini tanlang');
 
   try {
-    profileSessions.set(userId, {
+    const next = {
       ...session,
-      step: 'to_region',
       current_location: region.label,
       from_region: region.label,
-      presetId: 'custom',
-    });
+    };
     await ctx.answerCbQuery();
-    await ctx.editMessageText(
-      `Moshina: <b>${session.car_type}</b>\n` +
-        `Hozir: <b>${region.label}</b>\n\n` +
-        '🏁 <b>Qayerga bormoqchisiz?</b>',
-      {
-        parse_mode: 'HTML',
-        ...driverRegionKeyboard('drv_dest', {
-          extra: [[Markup.button.callback('🌍 Istalgan viloyatga', 'drv_dest_any')]],
-        }),
-      }
+    if (session.truck_number || session.mode === 'onboarding') {
+      await askDriverRoute(ctx, next);
+      return;
+    }
+    rememberWizard(ctx.from.id, { ...next, step: 'to_region', presetId: 'custom' });
+    await editWizard(
+      ctx,
+      next,
+      `Moshina: <b>${session.car_type}</b>\nHozir: <b>${region.label}</b>\n\n🏁 Qayerga bormoqchisiz?`,
+      driverRegionKeyboard('drv_dest', {
+        extra: [[Markup.button.callback('🌍 Istalgan viloyatga', 'drv_dest_any')]],
+      })
     );
   } catch (err) {
     console.error('[drv_loc]', err.message);
@@ -575,15 +740,24 @@ bot.action(/^drv_loc_(.+)$/, async (ctx) => {
   }
 });
 
-bot.action('drv_dest_any', async (ctx) => {
-  const userId = ctx.from.id;
-  const session = profileSessions.get(userId);
-  if (!session?.from_region && !session?.current_location) {
+async function finishCustomDest(ctx, dest) {
+  const session = profileSessions.get(ctx.from.id);
+  if (!session?.current_location && !session?.from_region) {
     return ctx.answerCbQuery('Avval viloyatni tanlang');
   }
+  const next = { ...session, to_region: dest, presetId: 'custom' };
+  if (session.truck_number) {
+    await ctx.answerCbQuery(STATUS_TOAST, { show_alert: true });
+    await finishDriverWizard(ctx, next);
+    return;
+  }
+  await ctx.answerCbQuery();
+  await askDriverPlate(ctx, next);
+}
+
+bot.action('drv_dest_any', async (ctx) => {
   try {
-    await ctx.answerCbQuery();
-    await askTruckNumber(ctx, { ...session, to_region: ANY_DEST, presetId: 'custom' });
+    await finishCustomDest(ctx, ANY_DEST);
   } catch (err) {
     console.error('[drv_dest_any]', err.message);
     await ctx.answerCbQuery('Xatolik');
@@ -593,17 +767,70 @@ bot.action('drv_dest_any', async (ctx) => {
 bot.action(/^drv_dest_(.+)$/, async (ctx) => {
   if (ctx.match[1] === 'any') return;
   const region = regionBySlug(ctx.match[1]);
-  if (!region) return ctx.answerCbQuery('Noto\'g\'ri viloyat');
-  const userId = ctx.from.id;
-  const session = profileSessions.get(userId);
-  if (!session?.current_location && !session?.from_region) {
-    return ctx.answerCbQuery('Avval qayerdan tanlang');
-  }
+  if (!region) return ctx.answerCbQuery("Noto'g'ri viloyat");
   try {
-    await ctx.answerCbQuery();
-    await askTruckNumber(ctx, { ...session, to_region: region.label, presetId: 'custom' });
+    await finishCustomDest(ctx, region.label);
   } catch (err) {
     console.error('[drv_dest]', err.message);
+    await ctx.answerCbQuery('Xatolik');
+  }
+});
+
+bot.action('change_location', async (ctx) => {
+  try {
+    const profile = await getDriverProfile(ctx.from.id);
+    if (!profile) {
+      return ctx.answerCbQuery('Avval Yuk Izlash orqali profil oching', { show_alert: true });
+    }
+    profileSessions.set(ctx.from.id, { mode: 'change_location', step: 'cloc' });
+    await ctx.answerCbQuery();
+    await ctx.editMessageText('📍 <b>Hozir qaysi viloyatdasiz?</b>', {
+      parse_mode: 'HTML',
+      ...driverRegionKeyboard('cloc'),
+    });
+  } catch (err) {
+    console.error('[change_location]', err.message);
+    await ctx.answerCbQuery('Xatolik');
+  }
+});
+
+bot.action(/^cloc_(.+)$/, async (ctx) => {
+  const region = regionBySlug(ctx.match[1]);
+  if (!region) return ctx.answerCbQuery("Noto'g'ri viloyat");
+  try {
+    const existing = await getDriverProfile(ctx.from.id);
+    await upsertDriverProfile(ctx.from.id, {
+      current_location: region.label,
+      from_region: region.label,
+      truck_type: existing?.truck_type || existing?.car_type,
+    });
+    clearProfile(ctx.from.id);
+    await ctx.answerCbQuery(STATUS_TOAST, { show_alert: true });
+    await replyCabinet(ctx, { edit: true });
+  } catch (err) {
+    console.error('[cloc]', err.message);
+    await ctx.answerCbQuery('Saqlashda xatolik');
+  }
+});
+
+bot.action('edit_truck', async (ctx) => {
+  try {
+    const profile = await getDriverProfile(ctx.from.id);
+    if (!profile) {
+      return ctx.answerCbQuery('Avval profilni oching', { show_alert: true });
+    }
+    profileSessions.set(ctx.from.id, {
+      mode: 'edit_truck',
+      step: 'car_type',
+      full_name: profile.full_name,
+    });
+    await ctx.answerCbQuery();
+    await ctx.editMessageText('🚚 Yangi mashina turini tanlang:', {
+      parse_mode: 'HTML',
+      ...driverCarKeyboard(),
+    });
+  } catch (err) {
+    console.error('[edit_truck]', err.message);
     await ctx.answerCbQuery('Xatolik');
   }
 });
@@ -617,6 +844,9 @@ bot.action('change_route', async (ctx) => {
     profileSessions.set(ctx.from.id, {
       step: 'ch_loc',
       car_type: profile.truck_type || profile.car_type,
+      truck_number: profile.truck_number,
+      body_type: profile.body_type,
+      full_name: profile.full_name,
       mode: 'change',
     });
     await ctx.answerCbQuery();
@@ -625,7 +855,7 @@ bot.action('change_route', async (ctx) => {
       {
         parse_mode: 'HTML',
         ...driverRegionKeyboard('ch_loc', {
-          extra: [[Markup.button.callback('🌍 Har qanday yo\'nalish', 'ch_rt_all')]],
+          extra: [[Markup.button.callback("🌍 Butun O'zbekiston", 'ch_rt_all')]],
         }),
       }
     );
@@ -638,9 +868,13 @@ bot.action('change_route', async (ctx) => {
 bot.action('ch_rt_all', async (ctx) => {
   try {
     const existing = await getDriverProfile(ctx.from.id);
-    await persistSessionRoute(ctx.from.id, { presetId: 'all', current_location: existing?.current_location }, {});
+    await persistSessionRoute(
+      ctx.from.id,
+      { presetId: 'all', current_location: existing?.current_location },
+      {}
+    );
     clearProfile(ctx.from.id);
-    await ctx.answerCbQuery('Marshrutingiz muvaffaqiyatli yangilandi!', { show_alert: true });
+    await ctx.answerCbQuery(STATUS_TOAST, { show_alert: true });
     await replyCabinet(ctx, { edit: true });
   } catch (err) {
     console.error('[ch_rt_all]', err.message);
@@ -650,7 +884,7 @@ bot.action('ch_rt_all', async (ctx) => {
 
 bot.action(/^ch_loc_(.+)$/, async (ctx) => {
   const region = regionBySlug(ctx.match[1]);
-  if (!region) return ctx.answerCbQuery('Noto\'g\'ri viloyat');
+  if (!region) return ctx.answerCbQuery("Noto'g'ri viloyat");
   try {
     const session = profileSessions.get(ctx.from.id) || { mode: 'change' };
     profileSessions.set(ctx.from.id, {
@@ -684,7 +918,7 @@ async function finishChangeRoute(ctx, dest) {
   }
   await persistSessionRoute(ctx.from.id, { ...session, to_region: dest, presetId: 'custom' });
   clearProfile(ctx.from.id);
-  await ctx.answerCbQuery('Marshrutingiz muvaffaqiyatli yangilandi!', { show_alert: true });
+  await ctx.answerCbQuery(STATUS_TOAST, { show_alert: true });
   await replyCabinet(ctx, { edit: true });
 }
 
@@ -700,7 +934,7 @@ bot.action('ch_dest_any', async (ctx) => {
 bot.action(/^ch_dest_(.+)$/, async (ctx) => {
   if (ctx.match[1] === 'any') return;
   const region = regionBySlug(ctx.match[1]);
-  if (!region) return ctx.answerCbQuery('Noto\'g\'ri viloyat');
+  if (!region) return ctx.answerCbQuery("Noto'g'ri viloyat");
   try {
     await finishChangeRoute(ctx, region.label);
   } catch (err) {
@@ -1003,7 +1237,7 @@ async function setDriverActive(ctx, { viaCabinet = false } = {}) {
     await replyCabinet(ctx, { edit: true });
   } else {
     await ctx.reply(
-      '🟢 <b>Yuk qidiryapman</b>\n\n' +
+      "🟢 <b>Yuk qidiryapman</b>\n\n" +
         `Yo'nalish: <b>${formatRouteLabel(driver)}</b> · ${driver.car_type || driver.truck_type}\n` +
         "Bildirishnomalar yoqildi. Mos aktiv yuklar hozir yuboriladi…",
       { parse_mode: 'HTML', ...mainMenuKeyboard({ isAdmin: isAdmin(ctx.from.id) }) }
@@ -1042,10 +1276,32 @@ async function setDriverBusy(ctx, { viaCabinet = false } = {}) {
   );
 }
 
+bot.action('driver_toggle_status', async (ctx) => {
+  try {
+    const driver = await getDriverProfile(ctx.from.id);
+    if (!hasRouteProfile(driver)) {
+      return ctx.answerCbQuery('Avval profilni oching', { show_alert: true });
+    }
+    await ctx.answerCbQuery(STATUS_TOAST, { show_alert: true });
+    if (driver.status === DRIVER_STATUS.BUSY) {
+      await setDriverActive(ctx, { viaCabinet: true });
+    } else {
+      await setDriverBusy(ctx, { viaCabinet: true });
+    }
+  } catch (err) {
+    console.error('[driver_toggle_status]', err.message);
+    try {
+      await ctx.answerCbQuery('Xatolik');
+    } catch {
+      /* ignore */
+    }
+  }
+});
+
 bot.action('driver_set_active', async (ctx) => {
   try {
-    await ctx.answerCbQuery();
     await setDriverActive(ctx, { viaCabinet: true });
+    await ctx.answerCbQuery(STATUS_TOAST, { show_alert: true });
   } catch (err) {
     console.error('[driver_set_active]', err.message);
     await ctx.answerCbQuery('Xatolik');
@@ -1054,8 +1310,8 @@ bot.action('driver_set_active', async (ctx) => {
 
 bot.action('driver_set_busy', async (ctx) => {
   try {
-    await ctx.answerCbQuery();
     await setDriverBusy(ctx, { viaCabinet: true });
+    await ctx.answerCbQuery(STATUS_TOAST, { show_alert: true });
   } catch (err) {
     console.error('[driver_set_busy]', err.message);
     await ctx.answerCbQuery('Xatolik');
@@ -1223,40 +1479,64 @@ bot.on('text', async (ctx, next) => {
   }
 
   const prof = profileSessions.get(userId);
+  if (prof?.step === 'full_name') {
+    if (text.length < 2) {
+      return ctx.reply('Ism juda qisqa. Ism-familiyani yozing.');
+    }
+    try {
+      await askDriverCar(ctx, { ...prof, full_name: text });
+    } catch (err) {
+      console.error('[full_name]', err.message);
+      await ctx.reply('Xatolik. Qayta urinib ko\'ring.');
+    }
+    return;
+  }
+
   if (prof?.step === 'truck_number') {
     if (text.length < 4) {
-      return ctx.reply('Raqam juda qisqa. Misol: <i>01 A 123 AA</i>', { parse_mode: 'HTML' });
+      return ctx.reply('Raqam juda qisqa. Misol: <i>01 A 777 AA</i>', { parse_mode: 'HTML' });
     }
 
     try {
-      const driver = await persistSessionRoute(userId, prof, {
-        truck_type: prof.car_type,
-        truck_number: text.toUpperCase(),
-        status: DRIVER_STATUS.ACTIVE,
-      });
+      const plate = text.toUpperCase();
+      const next = { ...prof, truck_number: plate };
 
-      clearProfile(userId);
-
-      await ctx.reply(
-        `✅ Rahmat! Yo'nalish yoqildi: <b>${formatRouteLabel(driver)}</b>.\n` +
-          'Mos tirik yuklar shaxsiyga avtomat tushadi.',
-        { parse_mode: 'HTML', ...mainMenuKeyboard({ isAdmin: isAdmin(userId) }) }
-      );
-
-      try {
-        const sent = await pushRecentMatchingOrders(ctx.telegram, driver);
-        if (sent === 0) {
-          await ctx.reply(
-            'ℹ️ Hozircha bu yo\'nalishda yangi yuk yo\'q. ' +
-              'Yangi yuk paydo bo\'lishi bilan darhol shu yerga yuboraman.'
-          );
-        }
-      } catch (pushErr) {
-        console.error('[truck_number] recent push:', pushErr.message);
+      if (prof.mode === 'edit_truck') {
+        const existing = await getDriverProfile(userId);
+        const driver = await upsertDriverProfile(userId, {
+          truck_type: prof.car_type || existing?.truck_type,
+          body_type: prof.body_type || existing?.body_type,
+          truck_number: plate,
+          full_name: prof.full_name || existing?.full_name,
+          is_verified: true,
+        });
+        clearProfile(userId);
+        const user = await getUserById(userId);
+        await ctx.reply(formatDriverCard(driver, user), {
+          parse_mode: 'HTML',
+          ...cabinetInlineKeyboard(driver),
+        });
+        return;
       }
+
+      if (prof.presetId || prof.to_region) {
+        await finishDriverWizard(ctx, next, {
+          truck_type: prof.car_type,
+          truck_number: plate,
+          status: DRIVER_STATUS.ACTIVE,
+        });
+        await ctx.reply('✅ Guvohnoma tayyor. Mos yuklar shaxsiyga tushadi.', {
+          parse_mode: 'HTML',
+          ...mainMenuKeyboard({ isAdmin: isAdmin(userId) }),
+        });
+        return;
+      }
+
+      rememberWizard(userId, next);
+      await askDriverLocation(ctx, next);
     } catch (err) {
       console.error('[truck_number]', err.message);
-      await ctx.reply('Saqlashda xatolik. Qayta urinib ko\'ring.');
+      await ctx.reply("Saqlashda xatolik. Qayta urinib ko'ring.");
     }
     return;
   }
