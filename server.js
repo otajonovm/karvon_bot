@@ -6,7 +6,7 @@ require('./config/env');
 
 const { validateEnv, printEnvHelp } = require('./lib/validateEnv');
 const { startHealthServer } = require('./lib/healthServer');
-const { startScraperLoop, stopScraperLoop } = require('./scraper');
+const { startScraperLoop, stopScraperLoop, disconnectActiveClient } = require('./scraper');
 const { startExpiryLoop, stopExpiryLoop } = require('./lib/orderExpiry');
 
 const { loadSession, sessionDiagnostics } = require('./lib/session');
@@ -49,18 +49,28 @@ startExpiryLoop();
 
 console.log('[karvon] Scraper qismi ishga tushirilmoqda (bot bilan bir processda)...');
 startScraperLoop().catch((err) => {
-  console.error('[karvon] Scraper loop xatosi:', err.message);
+  console.error('[karvon] Scraper loop xatosi (crash emas):', err.message);
 });
 
+let shuttingDown = false;
+
 async function gracefulShutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
   console.log(`\n[karvon] ${signal} — to'xtatilmoqda...`);
   stopScraperLoop();
   stopExpiryLoop();
   try {
     const { stopFeedbackLoop } = require('./lib/dealFeedback');
     stopFeedbackLoop();
-  } catch {
-    /* ignore */
+  } catch (err) {
+    console.error('[karvon] stopFeedbackLoop:', err.message);
+  }
+  try {
+    await disconnectActiveClient();
+    console.log('[karvon] GramJS session uzildi');
+  } catch (err) {
+    console.error('[karvon] client.disconnect:', err.message);
   }
   try {
     const { deleteWebhook } = require('./lib/botApi');
@@ -68,7 +78,7 @@ async function gracefulShutdown(signal) {
   } catch {
     /* ignore */
   }
-  setTimeout(() => process.exit(0), 3000).unref();
+  setTimeout(() => process.exit(0), 2500).unref();
 }
 
 process.once('SIGINT', () => gracefulShutdown('SIGINT'));

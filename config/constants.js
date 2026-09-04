@@ -56,6 +56,7 @@ const ROLES = {
 const ORDER_STATUS = {
   ACTIVE: 'active',
   TAKEN: 'taken',
+  EXPIRED: 'expired',
 };
 
 const DRIVER_STATUS = {
@@ -72,7 +73,7 @@ const GEMINI_SYSTEM_INSTRUCTION = `Extract logistics data from Uzbek Telegram ca
 Return strict raw JSON only (no markdown) with keys: from_region, to_region, car_type, cargo_details, phone_number.
 
 Normalize regions to EXACTLY one of: Toshkent, Farg'ona, Andijon, Namangan, Samarqand, Buxoro, Qashqadaryo, Surxondaryo.
-Map sub-cities: Qo'qon/Marg'ilon/Rishton→Farg'ona; Asaka/Shahrixon→Andijon; Chust/Pop→Namangan; Termiz→Surxondaryo; Qarshi→Qashqadaryo.
+Map districts: Qo'qon/Marg'ilon/Rishton/Oltiariq/Quva/Bog'dod/Uchko'prik→Farg'ona; Asaka/Shahrixon/Xo'jaobod/Bo'z/Marhamat/Qorasuv→Andijon; Chust/Pop/Kosonsoy/To'raqo'rg'on/Uychi→Namangan; Kattaqo'rg'on/Urgut/Toyloq/Oqdaryo/Pastdarg'om→Samarqand; Qarshi/Shahrisabz/Kitob/G'uzor/Koson/Nishon→Qashqadaryo; Termiz/Denov/Sherobod/Sho'rchi/Boysun→Surxondaryo.
 Never use Vodiy or Voha — always pick the specific province center above.
 Normalize car_type to exactly: Labo/Damas, Gazel, Isuzu, Fura.
 phone_number must include country code (+998...).

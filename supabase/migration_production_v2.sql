@@ -11,7 +11,11 @@ ALTER TABLE orders
     CHECK (status IN ('active', 'taken', 'expired'));
 
 ALTER TABLE orders
-  ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
+  ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+
+CREATE INDEX IF NOT EXISTS idx_orders_active_created
+  ON orders (created_at DESC)
+  WHERE status = 'active';
 
 -- Mavjud 'active' yuklar uchun default TTL: scraper=6h, bot=12h
 UPDATE orders
@@ -59,7 +63,7 @@ RETURNS void LANGUAGE sql AS $$
   WHERE user_id = driver_user_id;
 $$;
 
--- RLS
+
 ALTER TABLE deal_feedback ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "bot_deal_feedback_all" ON deal_feedback;
 CREATE POLICY "bot_deal_feedback_all" ON deal_feedback

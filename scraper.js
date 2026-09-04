@@ -268,6 +268,7 @@ async function handleGroupMessage(message, groupLabel) {
     if (!order) return;
 
     console.log(`[scraper] Bazaga saqlandi: order #${order.id}`);
+    // Instant push: ALL_ROUTES + mashina turi, yoki from_region ∈ preferred_routes / current_location
     void notifyMatchingDrivers(notifyTelegram, order).catch((notifyErr) => {
       console.error('[scraper] Push xatosi:', notifyErr.message);
     });
@@ -293,15 +294,28 @@ function stopScraperLoop() {
 }
 
 async function disconnectActiveClient() {
+  const client = activeClient;
+  activeClient = null;
+  clearActiveClient();
+  if (!client) return;
+
+  const timed = (p, ms) =>
+    Promise.race([p, new Promise((resolve) => setTimeout(resolve, ms))]);
+
   try {
-    if (activeClient?.connected) {
-      await activeClient.disconnect();
+    if (typeof client.disconnect === 'function') {
+      await timed(client.disconnect(), 4000);
+    }
+  } catch (err) {
+    console.error('[scraper] disconnect:', err.message);
+  }
+  try {
+    if (typeof client.destroy === 'function') {
+      await timed(client.destroy(), 2000);
     }
   } catch {
     /* ignore */
   }
-  activeClient = null;
-  clearActiveClient();
 }
 
 function isConfigError(msg) {
@@ -326,21 +340,36 @@ function logConfigHelp(err) {
   }
 }
 
+function parseFloodWaitMs(err) {
+  const msg = err?.message || String(err || '');
+  const m = msg.match(/FLOOD_WAIT_(\d+)/i) || msg.match(/wait of (\d+) seconds/i);
+  if (m) return Math.min(Number(m[1]) * 1000, 300_000);
+  if (Number.isFinite(err?.seconds)) return Math.min(err.seconds * 1000, 300_000);
+  return 0;
+}
+
+/** 30s → 60s → 120s (cap). Dynoni qizdirmaslik. */
 function reconnectDelay(err, attempt) {
   const msg = err?.message || '';
   if (isConfigError(msg)) {
     return 1_800_000;
   }
-  if (/AUTH_KEY_DUPLICATED/i.test(msg)) {
-    return Math.min(120_000 * attempt, 600_000);
+
+  const floodMs = parseFloodWaitMs(err);
+  const authish = /AUTH_KEY_DUPLICATED|AUTH_KEY_UNREGISTERED|SESSION_REVOKED|\b401\b|FloodWait/i.test(
+    msg
+  );
+  if (floodMs || authish) {
+    const exp = Math.min(30_000 * 2 ** Math.min(Math.max(attempt, 1) - 1, 2), 120_000);
+    return Math.max(floodMs, exp);
   }
   if (/TIMEOUT|ETIMEDOUT|ECONNRESET|Not connected|connection closed/i.test(msg)) {
-    return Math.min(30_000 * attempt, 180_000);
+    return Math.min(30_000 * Math.max(attempt, 1), 120_000);
   }
   if (/NO_GROUPS_CONNECTED/i.test(msg)) {
-    return Math.min(60_000 * attempt, 300_000);
+    return Math.min(60_000 * Math.max(attempt, 1), 180_000);
   }
-  return Math.min(45_000 * attempt, 300_000);
+  return Math.min(30_000 * 2 ** Math.min(Math.max(attempt, 1) - 1, 2), 120_000);
 }
 
 async function shutdownScraper(signal) {
@@ -394,10 +423,15 @@ async function runScraper() {
     console.log(`[scraper] Session yuklandi (${sessionString.length} belgi)`);
   }
 
+  if (activeClient) {
+    console.warn('[scraper] Eski client topildi — avval uziladi (singleton)');
+    await disconnectActiveClient();
+  }
+
   const client = new TelegramClient(new StringSession(sessionString), API_ID, API_HASH, {
-    connectionRetries: 10,
-    retryDelay: 5000,
-    autoReconnect: true,
+    connectionRetries: 3,
+    retryDelay: 8000,
+    autoReconnect: false,
     useWSS: process.env.TELEGRAM_USE_WSS === '1',
     baseLogger: new Logger('error'),
   });
@@ -550,7 +584,14 @@ async function runScraper() {
   }
 }
 
+let scraperLoopStarted = false;
+
 async function startScraperLoop() {
+  if (scraperLoopStarted) {
+    console.warn('[scraper] Loop allaqachon ishlamoqda — ikkinchi GramJS client ochilmaydi');
+    return;
+  }
+  scraperLoopStarted = true;
   loopActive = true;
   let attempt = 0;
 
@@ -561,7 +602,9 @@ async function startScraperLoop() {
       attempt += 1;
       console.log('[scraper] Ulanish uzildi, qayta ulanmoqda...');
       await disconnectActiveClient();
-      await new Promise((r) => setTimeout(r, reconnectDelay(new Error('disconnected'), attempt)));
+      const delay = reconnectDelay(new Error('disconnected'), attempt);
+      console.log(`[scraper] ${Math.round(delay / 1000)}s backoff (urinish ${attempt})`);
+      await new Promise((r) => setTimeout(r, delay));
     } catch (err) {
       if (!loopActive) break;
       attempt += 1;
@@ -573,14 +616,22 @@ async function startScraperLoop() {
         logConfigHelp(err);
         console.error('[scraper] Konfiguratsiya tuzatilguncha 30 daqiqada bir marta uriniladi...');
       } else if (isAuthDup) {
-        console.error('[scraper] ❌ Session boshqa joyda ochiq — lokal scraper to\'xtating, 2 daqiqa kuting');
+        console.error(
+          '[scraper] AUTH_KEY_DUPLICATED — session boshqa processda ochiq. ' +
+            'Lokal/DO scraper ni o\'chiring. Crash qilinmaydi, backoff bilan kutamiz.'
+        );
       }
       console.error(`[scraper] ${Math.round(delay / 1000)}s dan keyin qayta ulanadi (urinish ${attempt})...`);
 
-      await disconnectActiveClient();
+      try {
+        await disconnectActiveClient();
+      } catch (discErr) {
+        console.error('[scraper] disconnect after error:', discErr.message);
+      }
       await new Promise((r) => setTimeout(r, delay));
     }
   }
+  scraperLoopStarted = false;
 }
 
 if (require.main === module) {
@@ -595,4 +646,10 @@ function getActiveClient() {
   return getSharedClient();
 }
 
-module.exports = { startScraperLoop, stopScraperLoop, runScraper, getActiveClient };
+module.exports = {
+  startScraperLoop,
+  stopScraperLoop,
+  runScraper,
+  getActiveClient,
+  disconnectActiveClient,
+};

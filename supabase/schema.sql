@@ -25,6 +25,8 @@ CREATE TABLE IF NOT EXISTS drivers (
   from_region       TEXT,
   to_region         TEXT,
   truck_number      TEXT,
+  preferred_routes  JSONB NOT NULL DEFAULT '[]'::jsonb,
+  current_location  TEXT,
   status            TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'busy')),
   is_verified       BOOLEAN NOT NULL DEFAULT false,
   passport_file_id  TEXT,
@@ -66,6 +68,8 @@ CREATE TABLE IF NOT EXISTS order_tracking (
 
 CREATE INDEX IF NOT EXISTS idx_drivers_match ON drivers (car_type, preferred_route);
 CREATE INDEX IF NOT EXISTS idx_drivers_status ON drivers (status);
+CREATE INDEX IF NOT EXISTS idx_drivers_current_location ON drivers (current_location);
+CREATE INDEX IF NOT EXISTS idx_drivers_preferred_routes ON drivers USING GIN (preferred_routes);
 CREATE INDEX IF NOT EXISTS idx_order_tracking_order ON order_tracking (order_id);
 CREATE INDEX IF NOT EXISTS idx_order_tracking_latest ON order_tracking (order_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders (status);
