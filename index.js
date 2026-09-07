@@ -587,7 +587,7 @@ async function askSharePhone(ctx, hint) {
   });
 }
 
-async function deliverOrderToDriver(ctx, orderId, { scheduleFeedbackForDriver = false } = {}) {
+async function deliverOrderToDriver(ctx, orderId, { fromGroup = false } = {}) {
   const { formatOrderMessage, orderActionKeyboard } = require('./lib/notifications');
   const { active, reason, order } = await isOrderActive(orderId);
   if (!active || !order) {
@@ -596,11 +596,10 @@ async function deliverOrderToDriver(ctx, orderId, { scheduleFeedbackForDriver = 
   }
   await ctx.reply(formatOrderMessage(order, null), {
     parse_mode: 'HTML',
-    ...orderActionKeyboard(order),
+    ...orderActionKeyboard(order, {
+      acceptAction: fromGroup ? 'accept_group_order' : 'accept_order',
+    }),
   });
-  if (scheduleFeedbackForDriver) {
-    scheduleFeedback(orderId, ctx.from.id).catch(() => {});
-  }
   return true;
 }
 
@@ -635,7 +634,7 @@ async function claimGroupOrder(ctx, orderId) {
     return;
   }
   pendingOrderByUser.delete(ctx.from.id);
-  await deliverOrderToDriver(ctx, orderId);
+  await deliverOrderToDriver(ctx, orderId, { fromGroup: true });
   await sendMainMenu(ctx, 'Asosiy menyu:');
 }
 
@@ -1989,8 +1988,9 @@ bot.action('wiz_cancel', async (ctx) => {
 
 // ─── Order acceptance (eski callback xabarlar uchun) ─────────────────────────
 
-bot.action(/^accept_order_(.+)$/, async (ctx) => {
-  const orderId = ctx.match[1];
+bot.action(/^accept_(group_)?order_(.+)$/, async (ctx) => {
+  const fromGroup = Boolean(ctx.match[1]);
+  const orderId = ctx.match[2];
   const driverId = ctx.from.id;
 
   try {
@@ -2061,8 +2061,12 @@ bot.action(/^accept_order_(.+)$/, async (ctx) => {
       console.error('[accept_order] broker report:', reportErr.message);
     }
 
-    // 30 daqiqadan so'ng "kelishdingizmi?" feedback yuboriladi
-    scheduleFeedback(orderId, driverId).catch(() => {});
+    // Feedback faqat guruhdagi yuk haqiqatan haydovchiga biriktirilgandan
+    // keyin yuboriladi. Push/catch-up yoki oddiy raqam ochish feedback
+    // yaratmasligi kerak.
+    if (fromGroup) {
+      scheduleFeedback(orderId, driverId).catch(() => {});
+    }
   } catch (err) {
     console.error('[accept_order]', err.message);
     await ctx.answerCbQuery('Xatolik yuz berdi');
@@ -2091,9 +2095,6 @@ bot.action(/^call_order_(.+)$/, async (ctx) => {
     await ctx.reply(`📞 Mijoz raqami: <b>${phone}</b>\nQo'ng'iroq qiling.`, {
       parse_mode: 'HTML',
     });
-    scheduleFeedback(orderId, ctx.from.id).catch((err) =>
-      console.error('[call_order] feedback:', err.message)
-    );
   } catch (err) {
     console.error('[call_order]', err.message);
     await ctx.answerCbQuery('Xatolik').catch(() => {});
