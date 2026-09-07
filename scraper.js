@@ -12,13 +12,13 @@ const { NewMessage } = require('telegram/events');
 
 const { getSupabase } = require('./lib/supabase');
 const { parseCargoMessage, logAiStats } = require('./lib/gemini');
-const { notifyMatchingDrivers } = require('./lib/notifications');
 const { insertOrder, logSupabaseError } = require('./lib/orders');
 const { normalizePhone } = require('./lib/normalize');
 const { createTelegramAdapter } = require('./lib/botApi');
 const { CARGO_GROUPS, getRoyalCargoGroupId } = require('./config/constants');
 const { handleRoyalGroupMessageUserbot } = require('./lib/groupSecurity');
 const { setActiveClient, clearActiveClient } = require('./lib/userbotClient');
+const { distributeScrapedOrder } = require('./lib/distributeOrder');
 
 // ─── Validate env ────────────────────────────────────────────────────────────
 
@@ -268,10 +268,11 @@ async function handleGroupMessage(message, groupLabel) {
     if (!order) return;
 
     console.log(`[scraper] Bazaga saqlandi: order #${order.id}`);
-    // Instant push: ALL_ROUTES + mashina turi, yoki from_region ∈ preferred_routes / current_location
-    void notifyMatchingDrivers(notifyTelegram, order).catch((notifyErr) => {
-      console.error('[scraper] Push xatosi:', notifyErr.message);
-    });
+    try {
+      await distributeScrapedOrder(notifyTelegram, order);
+    } catch (distErr) {
+      console.error('[scraper] Tarqatish xatosi:', distErr.message);
+    }
   } catch (err) {
     if (err?.message) logSupabaseError('scraper.insertOrder', err);
     const rls = /row-level security/i.test(err?.message || '');

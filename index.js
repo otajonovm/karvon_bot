@@ -9,7 +9,7 @@ if (process.env.PORT && !process.env.KARVON_CHILD) {
 const { Telegraf, Markup } = require('telegraf');
 const { getSupabase } = require('./lib/supabase');
 const {
-  notifyMatchingDrivers,
+  matchAndNotifyDrivers,
   pushRecentMatchingOrders,
   markOrderTakenForOthers,
   acceptOrder,
@@ -45,7 +45,6 @@ const { upsertDriverProfile, setDriverStatus, getDriverProfile } = require('./li
 const { getUserById, upsertUserPhone } = require('./lib/users');
 const { buildStatusMessage, ensureDriverRole, hasRouteProfile } = require('./lib/statusPanel');
 const { ensureBroker } = require('./lib/brokers');
-const { findDriversForBroker, formatDriverList } = require('./lib/brokerMatching');
 const { crosspostToDm } = require('./lib/crosspost');
 const { getActiveClient } = require('./lib/userbotClient');
 const { handleRoyalGroupMessage } = require('./lib/groupSecurity');
@@ -57,6 +56,7 @@ const { markLaunched, markOk, markError } = require('./lib/botHealth');
 const { collectAdminStats, formatAdminPanel } = require('./lib/admin');
 const { ANY_DEST, buildSaveFields, regionBySlug, formatRouteLabel } = require('./lib/driverRoutes');
 const { formatDriverCard, telegramDisplayName } = require('./lib/driverCard');
+const { formatDispatcherReport } = require('./lib/dispatchReport');
 const { isOrderActive, EXPIRED_USER_MSG } = require('./lib/orders');
 const {
   scheduleFeedback,
@@ -104,6 +104,8 @@ bot.on('message', async (ctx, next) => {
 // In-memory broker yuk joylash wizard
 const brokerSessions = new Map();
 const pendingBroker = new Set();
+const pendingDriverSignup = new Set();
+const pendingOrderByUser = new Map();
 
 // Eski /neworder wizard
 const wizardSessions = new Map();
@@ -333,6 +335,17 @@ async function finishDriverWizard(ctx, session, extra = {}) {
   } catch (pushErr) {
     console.error('[wizard] recent push:', pushErr.message);
   }
+
+  const pendingOrderId = pendingOrderByUser.get(userId);
+  if (pendingOrderId) {
+    pendingOrderByUser.delete(userId);
+    try {
+      await ctx.reply("✅ Guvohnoma tayyor. Guruhdagi yuk ochildi:");
+      await deliverOrderToDriver(ctx, pendingOrderId);
+    } catch (err) {
+      console.error('[wizard] pending order:', err.message);
+    }
+  }
   return driver;
 }
 
@@ -384,6 +397,88 @@ async function startBrokerFlow(ctx) {
   await beginBrokerWizard(ctx, user.phone);
 }
 
+async function askSharePhone(ctx, hint) {
+  return ctx.reply(hint || '📱 Davom etish uchun telefon raqamingizni yuboring:', {
+    parse_mode: 'HTML',
+    ...Markup.keyboard([Markup.button.contactRequest('📱 Telefon raqamni yuborish')])
+      .oneTime()
+      .resize(),
+  });
+}
+
+async function deliverOrderToDriver(ctx, orderId) {
+  const { formatOrderMessage, orderActionKeyboard } = require('./lib/notifications');
+  const { active, reason, order } = await isOrderActive(orderId);
+  if (!active || !order) {
+    await ctx.reply(reason === 'taken' ? 'Bu yuk allaqachon olingan!' : EXPIRED_USER_MSG);
+    return false;
+  }
+  await ctx.reply(formatOrderMessage(order, null), {
+    parse_mode: 'HTML',
+    ...orderActionKeyboard(order),
+  });
+  scheduleFeedback(orderId, ctx.from.id).catch(() => {});
+  return true;
+}
+
+async function claimGroupOrder(ctx, orderId) {
+  const user = await getUserById(ctx.from.id);
+  if (!user?.phone) {
+    pendingOrderByUser.set(ctx.from.id, orderId);
+    pendingDriverSignup.add(ctx.from.id);
+    await askSharePhone(
+      ctx,
+      "🚚 Guruhdagi yukni olish uchun avval telefon raqamingizni ulashing, so'ng haydovchi sifatida ro'yxatdan o'ting."
+    );
+    return;
+  }
+
+  const profile = await getDriverProfile(ctx.from.id);
+  if (!hasRouteProfile(profile)) {
+    pendingOrderByUser.set(ctx.from.id, orderId);
+    await ctx.reply(
+      "🚚 <b>Yukni olish uchun haydovchi profili kerak</b>\n\n" +
+        "Guruhdagi mijoz raqami faqat ro'yxatdan o'tgan haydovchiga ochiladi. " +
+        "Hozir guvohnomani to'ldiring — tugagach shu yuk ochiladi.",
+      { parse_mode: 'HTML' }
+    );
+    await beginDriverProfileFlow(ctx);
+    return;
+  }
+
+  await ensureDriverRole(ctx.from.id);
+  pendingOrderByUser.delete(ctx.from.id);
+  await deliverOrderToDriver(ctx, orderId);
+  await sendMainMenu(ctx, 'Asosiy menyu:');
+}
+
+async function startDriverSignup(ctx) {
+  const user = await getUserById(ctx.from.id);
+  if (!user?.phone) {
+    pendingDriverSignup.add(ctx.from.id);
+    await askSharePhone(
+      ctx,
+      "🚚 Haydovchi bo'lish uchun avval telefon raqamingizni ulashing."
+    );
+    return;
+  }
+  const profile = await getDriverProfile(ctx.from.id);
+  if (hasRouteProfile(profile)) {
+    await sendMainMenu(
+      ctx,
+      "✅ Siz allaqachon haydovchi sifatida ro'yxatdan o'tgansiz. Mos yuklar shaxsiyga tushadi."
+    );
+    await replyCabinet(ctx);
+    try {
+      await pushRecentMatchingOrders(ctx.telegram, profile);
+    } catch (err) {
+      console.error('[start driver] catch-up:', err.message);
+    }
+    return;
+  }
+  await beginDriverProfileFlow(ctx);
+}
+
 async function beginDriverProfileFlow(ctx) {
   const userId = ctx.from.id;
   const user = await getUserById(userId);
@@ -414,20 +509,8 @@ async function beginDriverProfileFlow(ctx) {
 bot.start(async (ctx) => {
   try {
     const payload = String(ctx.startPayload || '').trim();
-    if (payload.startsWith('order_')) {
-      const orderId = payload.slice('order_'.length);
-      const { active, reason, order } = await isOrderActive(orderId);
-      if (!active || !order) {
-        await ctx.reply(reason === 'taken' ? 'Bu yuk allaqachon olingan!' : EXPIRED_USER_MSG);
-      } else {
-        const { formatOrderMessage, orderActionKeyboard } = require('./lib/notifications');
-        await ctx.reply(formatOrderMessage(order, null), {
-          parse_mode: 'HTML',
-          ...orderActionKeyboard(order),
-        });
-        scheduleFeedback(orderId, ctx.from.id).catch(() => {});
-      }
-    }
+    const orderId = payload.startsWith('order_') ? payload.slice('order_'.length) : '';
+    const wantDriver = payload === 'driver' || Boolean(orderId);
 
     let user;
     try {
@@ -438,6 +521,16 @@ bot.start(async (ctx) => {
       throw err;
     }
 
+    if (orderId) {
+      await claimGroupOrder(ctx, orderId);
+      return;
+    }
+
+    if (payload === 'driver') {
+      await startDriverSignup(ctx);
+      return;
+    }
+
     if (user?.phone) {
       return sendMainMenu(
         ctx,
@@ -446,22 +539,16 @@ bot.start(async (ctx) => {
       );
     }
 
-    await ctx.reply(
-      "👋 <b>Karvon</b>ga xush kelibsiz!\n\n" +
-        'Davom etish uchun telefon raqamingizni yuboring.',
-      {
-        parse_mode: 'HTML',
-        ...Markup.keyboard([
-          Markup.button.contactRequest('📱 Telefon raqamni yuborish'),
-        ])
-          .oneTime()
-          .resize(),
-      }
+    if (wantDriver) pendingDriverSignup.add(ctx.from.id);
+
+    await askSharePhone(
+      ctx,
+      "👋 <b>Karvon</b>ga xush kelibsiz!\n\nDavom etish uchun telefon raqamingizni yuboring."
     );
   } catch (err) {
     logDbError('start', err);
     if (isDbUnreachable(err)) return replyDbUnavailable(ctx);
-    await ctx.reply('Xatolik yuz berdi. Qayta urinib ko\'ring.', mainMenuKeyboard());
+    await ctx.reply("Xatolik yuz berdi. Qayta urinib ko'ring.", mainMenuKeyboard());
   }
 });
 
@@ -485,6 +572,17 @@ bot.on('contact', async (ctx) => {
     if (pendingBroker.has(userId)) {
       pendingBroker.delete(userId);
       await beginBrokerWizard(ctx, phone);
+      return;
+    }
+
+    if (pendingDriverSignup.has(userId) || pendingOrderByUser.has(userId)) {
+      pendingDriverSignup.delete(userId);
+      const orderId = pendingOrderByUser.get(userId);
+      if (orderId) {
+        await claimGroupOrder(ctx, orderId);
+        return;
+      }
+      await startDriverSignup(ctx);
       return;
     }
 
@@ -1140,7 +1238,7 @@ bot.action('brk_publish', async (ctx) => {
   const session = brokerSessions.get(userId);
 
   if (!session || session.step !== 'confirm') {
-    return ctx.answerCbQuery('Avval yuk ma\'lumotlarini to\'ldiring');
+    return ctx.answerCbQuery("Avval yuk ma'lumotlarini to'ldiring");
   }
 
   await ctx.answerCbQuery('Guruhga joylanmoqda...');
@@ -1158,13 +1256,7 @@ bot.action('brk_publish', async (ctx) => {
     clearBroker(userId);
     await ctx.editMessageReplyMarkup({ inline_keyboard: [] }).catch(() => {});
 
-    const drivers = await findDriversForBroker({
-      truck_type: session.truck_type,
-      from_region: session.from_region,
-      to_region: session.to_region,
-    });
-
-    await notifyMatchingDrivers(ctx.telegram, order);
+    const royal = await postOrderToRoyalGroup(ctx.telegram, order);
 
     const dmClient = getActiveClient();
     if (dmClient) {
@@ -1173,36 +1265,29 @@ bot.action('brk_publish', async (ctx) => {
       });
     }
 
-    const royal = await postOrderToRoyalGroup(ctx.telegram, order);
-
-    if (royal.ok) {
-      await ctx.reply(
-        '✅ Yukingiz rasmiy guruhga joylandi va mos haydovchilarga yuborildi!',
-        mainMenuKeyboard()
-      );
-    } else if (royal.error === 'ROYAL_CARGO_GROUP_ID_EMPTY') {
-      await ctx.reply(
-        "✅ Yuk saqlandi va haydovchilarga yuborildi.\n⚠️ ROYAL_CARGO_GROUP_ID sozlanmagan — guruhga chiqarilmadi.",
-        mainMenuKeyboard()
-      );
-    } else if (royal.error === 'ADMIN_RIGHTS_REQUIRED') {
-      await ctx.reply(
-        "✅ Yuk saqlandi va haydovchilarga yuborildi.\n⚠️ Bot guruhda admin emas — guruhga chiqarib bo'lmadi.",
-        mainMenuKeyboard()
-      );
-    } else {
-      await ctx.reply(
-        `✅ Yuk saqlandi va haydovchilarga yuborildi.\n⚠️ Guruhga chiqarishda xatolik: ${royal.error}`,
-        mainMenuKeyboard()
-      );
+    let pushResult = { matchedCount: 0, notifiedCount: 0, notifiedDriverIds: [] };
+    try {
+      pushResult = (await matchAndNotifyDrivers(ctx.telegram, order)) || pushResult;
+    } catch (pushErr) {
+      console.error('[brk_publish] push:', pushErr.message);
     }
 
-    if (drivers.length > 0) {
-      await ctx.reply("✅ Mos bo'sh moshinalar:\n" + formatDriverList(drivers));
+    await ctx.reply(formatDispatcherReport(order, pushResult), {
+      parse_mode: 'HTML',
+      ...mainMenuKeyboard({ isAdmin: isAdmin(userId) }),
+    });
+
+    if (!royal.ok && royal.error && royal.error !== 'ROYAL_CARGO_GROUP_ID_EMPTY') {
+      await ctx.reply(
+        royal.error === 'ADMIN_RIGHTS_REQUIRED'
+          ? "⚠️ Bot guruhda admin emas — e'lon guruhga chiqmadi, lekin haydovchilarga yuborildi."
+          : `⚠️ Guruhga chiqarishda xatolik: ${royal.error}`,
+        { parse_mode: 'HTML' }
+      );
     }
   } catch (err) {
     console.error('[brk_publish]', err.message);
-    await ctx.reply('Saqlashda xatolik. Qayta urinib ko\'ring.', mainMenuKeyboard());
+    await ctx.reply("Saqlashda xatolik. Qayta urinib ko'ring.", mainMenuKeyboard());
   }
 });
 
@@ -1600,9 +1685,17 @@ bot.action('wiz_confirm', async (ctx) => {
 
     clearWizard(userId);
     await ctx.answerCbQuery('Buyurtma joylandi!');
-    await ctx.editMessageText('✅ Buyurtmangiz tizimga chiqarildi! Haydovchilar tez orada bog\'lanadi.');
 
-    await notifyMatchingDrivers(ctx.telegram, order);
+    let pushResult = { matchedCount: 0, notifiedCount: 0, notifiedDriverIds: [] };
+    try {
+      pushResult = (await matchAndNotifyDrivers(ctx.telegram, order)) || pushResult;
+    } catch (pushErr) {
+      console.error('[wiz_confirm] push:', pushErr.message);
+    }
+
+    await ctx.editMessageText(formatDispatcherReport(order, pushResult), {
+      parse_mode: 'HTML',
+    });
   } catch (err) {
     console.error('[wiz_confirm]', err.message);
     await ctx.answerCbQuery('Xatolik yuz berdi');
@@ -1629,8 +1722,12 @@ bot.action(/^accept_order_(.+)$/, async (ctx) => {
       .eq('id', driverId)
       .single();
 
-    if (!user || user.role !== ROLES.DRIVER) {
-      return ctx.answerCbQuery('Faqat haydovchilar yuk olishi mumkin');
+    const profile = await getDriverProfile(driverId);
+    if (!user || user.role !== ROLES.DRIVER || !hasRouteProfile(profile)) {
+      await ctx.answerCbQuery("Avval haydovchi sifatida ro'yxatdan o'ting", { show_alert: true });
+      pendingDriverSignup.add(driverId);
+      await beginDriverProfileFlow(ctx);
+      return;
     }
 
     // Expired tekshiruv
@@ -1686,6 +1783,13 @@ bot.action(/^accept_order_(.+)$/, async (ctx) => {
 bot.action(/^call_order_(.+)$/, async (ctx) => {
   const orderId = ctx.match[1];
   try {
+    const profile = await getDriverProfile(ctx.from.id);
+    if (!hasRouteProfile(profile)) {
+      await ctx.answerCbQuery("Raqam faqat haydovchilarga ochiladi", { show_alert: true });
+      pendingOrderByUser.set(ctx.from.id, orderId);
+      await beginDriverProfileFlow(ctx);
+      return;
+    }
     const { active, reason, order } = await isOrderActive(orderId);
     if (!active) {
       const msg = reason === 'taken' ? 'Bu yuk allaqachon olingan!' : EXPIRED_USER_MSG;
