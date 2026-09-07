@@ -587,7 +587,7 @@ async function askSharePhone(ctx, hint) {
   });
 }
 
-async function deliverOrderToDriver(ctx, orderId) {
+async function deliverOrderToDriver(ctx, orderId, { scheduleFeedbackForDriver = false } = {}) {
   const { formatOrderMessage, orderActionKeyboard } = require('./lib/notifications');
   const { active, reason, order } = await isOrderActive(orderId);
   if (!active || !order) {
@@ -598,7 +598,9 @@ async function deliverOrderToDriver(ctx, orderId) {
     parse_mode: 'HTML',
     ...orderActionKeyboard(order),
   });
-  scheduleFeedback(orderId, ctx.from.id).catch(() => {});
+  if (scheduleFeedbackForDriver) {
+    scheduleFeedback(orderId, ctx.from.id).catch(() => {});
+  }
   return true;
 }
 
@@ -627,7 +629,11 @@ async function claimGroupOrder(ctx, orderId) {
     return;
   }
 
-  await ensureDriverRole(ctx.from.id);
+  const roleResult = await ensureDriverRole(ctx.from.id);
+  if (!roleResult.ok) {
+    await ctx.reply("Haydovchi sifatida davom etish uchun telefon raqamingizni ulang.");
+    return;
+  }
   pendingOrderByUser.delete(ctx.from.id);
   await deliverOrderToDriver(ctx, orderId);
   await sendMainMenu(ctx, 'Asosiy menyu:');
@@ -1988,17 +1994,22 @@ bot.action(/^accept_order_(.+)$/, async (ctx) => {
   const driverId = ctx.from.id;
 
   try {
-    const { data: user } = await supabase
-      .from('users')
-      .select('role')
-      .eq('id', driverId)
-      .single();
-
     const profile = await getDriverProfile(driverId);
-    if (!user || user.role !== ROLES.DRIVER || !hasRouteProfile(profile)) {
+    if (!profile || !hasRouteProfile(profile)) {
       await ctx.answerCbQuery("Avval haydovchi sifatida ro'yxatdan o'ting", { show_alert: true });
       pendingDriverSignup.add(driverId);
       await beginDriverProfileFlow(ctx);
+      return;
+    }
+
+    // Eski profillarda users.role client bo'lib qolgan bo'lishi mumkin.
+    // To'liq driver profil mavjud bo'lsa, rolni shu yerda sinxronlaymiz.
+    const roleResult = await ensureDriverRole(driverId);
+    if (!roleResult.ok) {
+      await ctx.answerCbQuery(
+        "Avval telefon raqamingizni ulang",
+        { show_alert: true }
+      );
       return;
     }
 
