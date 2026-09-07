@@ -399,6 +399,30 @@ function subscriptionKeyboard() {
   ]);
 }
 
+const BROKER_BENEFITS_TEXT =
+  '📦 <b>Karvonda yuk joylashning afzalliklari</b>\n' +
+  '━━━━━━━━━━━━━━━━━━\n' +
+  '✅ E’loningiz rasmiy Karvon guruhiga chiqariladi.\n' +
+  '✅ Tizim yo‘nalish, mashina turi va kuzoviga mos haydovchilarni topadi.\n' +
+  '✅ Mos bo‘sh haydovchilarga to‘g‘ridan-to‘g‘ri Telegram PUSH yuboriladi.\n' +
+  '✅ Nechta haydovchi topilgani va nechta PUSH yuborilgani haqida hisobot olasiz.\n' +
+  '✅ Haydovchi yukni olganda uning ismi, mashinasi, raqami va telefoni sizga yuboriladi.\n' +
+  '✅ Telefon raqamingiz guruhda yashiriladi va faqat ro‘yxatdan o‘tgan haydovchiga ochiladi.\n' +
+  '✅ E’lonlar dublikatlardan himoyalanadi va muddati o‘tgan yuklar avtomatik yopiladi.\n\n' +
+  '🛡 <b>Haydovchilar ishonchliligi</b>\n' +
+  'Haydovchi botda telefon raqami, ism-familiyasi, mashina turi, kuzovi, davlat raqami va yo‘nalishini kiritib ro‘yxatdan o‘tadi. Tizim faqat profili to‘liq va holati <b>Bo‘sh</b> haydovchilarga PUSH yuboradi.\n\n' +
+  '⚠️ Karvon moslashtirish va aloqa platformasi: yakuniy kelishuv, narx va hujjatlarni tomonlar o‘zlari tekshiradi. Platforma haydovchi yoki yuk bo‘yicha 100% kafolat bermaydi.\n\n' +
+  '💳 <b>Tariflar:</b> kuniga 1 ta e’lon bepul. Keyin Haftalik PRO — 19 000 so‘m, Oylik PRO — 49 000 so‘m yoki bittalik e’lon — 5 000 so‘m.';
+
+async function showBrokerBenefits(ctx, phone) {
+  await ctx.reply(BROKER_BENEFITS_TEXT, {
+    parse_mode: 'HTML',
+    ...Markup.inlineKeyboard([
+      [Markup.button.callback('🚀 E’lon berishni boshlash', 'broker_start_wizard')],
+    ]),
+  });
+}
+
 async function replySubscriptionRequired(ctx) {
   await ctx.reply(
     '⚠️ <b>Kunlik bepul limitingiz tugadi!</b>\n\n' +
@@ -444,8 +468,28 @@ async function startBrokerFlow(ctx) {
     return;
   }
 
-  await beginBrokerWizard(ctx, user.phone);
+  await showBrokerBenefits(ctx, user.phone);
 }
+
+bot.action('broker_start_wizard', async (ctx) => {
+  try {
+    const user = await getUserById(ctx.from.id);
+    if (!user?.phone) {
+      return ctx.answerCbQuery('Avval telefon raqamingizni ulang', { show_alert: true });
+    }
+    const access = await canPublishOrder(ctx.from.id);
+    if (!access.allowed) {
+      await ctx.answerCbQuery();
+      await replySubscriptionRequired(ctx);
+      return;
+    }
+    await ctx.answerCbQuery();
+    await beginBrokerWizard(ctx, user.phone);
+  } catch (err) {
+    console.error('[broker_start_wizard]', err.message);
+    await ctx.answerCbQuery('Xatolik yuz berdi');
+  }
+});
 
 function paymentInstructions(planId) {
   const plan = PAYMENT_PLANS[planId];
@@ -708,7 +752,7 @@ bot.on('contact', async (ctx) => {
 
     if (pendingBroker.has(userId)) {
       pendingBroker.delete(userId);
-      await beginBrokerWizard(ctx, phone);
+      await showBrokerBenefits(ctx, phone);
       return;
     }
 
