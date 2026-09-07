@@ -56,7 +56,24 @@ const { markLaunched, markOk, markError } = require('./lib/botHealth');
 const { collectAdminStats, formatAdminPanel } = require('./lib/admin');
 const { ANY_DEST, buildSaveFields, regionBySlug, formatRouteLabel } = require('./lib/driverRoutes');
 const { formatDriverCard, telegramDisplayName } = require('./lib/driverCard');
-const { formatDispatcherReport } = require('./lib/dispatchReport');
+const {
+  formatDispatcherReport,
+  sendDriverAcceptedReport,
+} = require('./lib/dispatchReport');
+const {
+  PAYMENT_PLANS,
+  PAYMENT_CARD,
+  PAYMENT_CARD_HOLDER,
+  ADMIN_CHAT_ID,
+  ADMIN_USERNAME,
+  canPublishOrder,
+  reserveOrderSlot,
+  releaseOrderSlot,
+  createPayment,
+  approvePayment,
+  rejectPayment,
+  paymentPlanLabel,
+} = require('./lib/subscriptions');
 const { isOrderActive, EXPIRED_USER_MSG } = require('./lib/orders');
 const {
   scheduleFeedback,
@@ -112,6 +129,7 @@ const wizardSessions = new Map();
 
 // Haydovchi profil wizard
 const profileSessions = new Map();
+const receiptSessions = new Map();
 
 const CAR_SLUG_MAP = {
   fura: 'Fura',
@@ -367,6 +385,32 @@ function clearBroker(userId) {
   brokerSessions.delete(userId);
 }
 
+function subscriptionKeyboard() {
+  return Markup.inlineKeyboard([
+    [
+      Markup.button.callback('💳 Haftalik PRO (19 000)', 'pay_plan_pro_weekly'),
+    ],
+    [
+      Markup.button.callback('💳 Oylik PRO (49 000)', 'pay_plan_pro_monthly'),
+    ],
+    [
+      Markup.button.callback('💳 Bittalik (5 000)', 'pay_plan_single_order'),
+    ],
+  ]);
+}
+
+async function replySubscriptionRequired(ctx) {
+  await ctx.reply(
+    '⚠️ <b>Kunlik bepul limitingiz tugadi!</b>\n\n' +
+      'Siz bugun 1 ta bepul e’lon berdingiz. Yukingiz zudlik bilan barcha haydovchilarga PUSH xabar bo‘lib borishi uchun obunani faollashtiring:\n\n' +
+      '🔹 <b>Haftalik PRO:</b> 19 000 so‘m (7 kun cheksiz)\n' +
+      '🔹 <b>Oylik PRO:</b> 49 000 so‘m (30 kun cheksiz)\n' +
+      '🔹 <b>Bittalik e’lon:</b> 5 000 so‘m\n\n' +
+      'Kerakli tarifni tanlang:',
+    { parse_mode: 'HTML', ...subscriptionKeyboard() }
+  );
+}
+
 async function beginBrokerWizard(ctx, phone) {
   const userId = ctx.from.id;
   await ensureBroker(userId, phone);
@@ -394,8 +438,101 @@ async function startBrokerFlow(ctx) {
     );
   }
 
+  const access = await canPublishOrder(userId);
+  if (!access.allowed) {
+    await replySubscriptionRequired(ctx);
+    return;
+  }
+
   await beginBrokerWizard(ctx, user.phone);
 }
+
+function paymentInstructions(planId) {
+  const plan = PAYMENT_PLANS[planId];
+  return (
+    '💳 <b>To‘lov ma’lumotlari</b>\n\n' +
+    `Tarif: <b>${plan.label} (${plan.amount.toLocaleString('uz-UZ')} so‘m)</b>\n\n` +
+    `Karta: <code>${PAYMENT_CARD}</code>\n` +
+    `Karta egasi: <b>${PAYMENT_CARD_HOLDER}</b>\n\n` +
+    '⚠️ To‘lovni amalga oshirgach, to‘lov cheki (skrinshot)ni ushbu botga rasm holatida yuboring.'
+  );
+}
+
+bot.action(/^pay_plan_(pro_weekly|pro_monthly|single_order)$/, async (ctx) => {
+  const planId = ctx.match[1];
+  try {
+    if (!PAYMENT_PLANS[planId]) return ctx.answerCbQuery('Tarif topilmadi');
+    receiptSessions.set(ctx.from.id, {
+      plan: planId,
+      createdAt: Date.now(),
+    });
+    await ctx.answerCbQuery();
+    await ctx.editMessageText(paymentInstructions(planId), {
+      parse_mode: 'HTML',
+    });
+  } catch (err) {
+    console.error('[payment.plan]', err.message);
+    await ctx.answerCbQuery('Xatolik yuz berdi');
+  }
+});
+
+function adminPaymentCaption(payment, from) {
+  const username = from?.username ? `@${from.username}` : 'username yo‘q';
+  return (
+    '🔔 <b>Yangi to‘lov cheki!</b>\n' +
+    `👤 Foydalanuvchi: ${from?.first_name || payment.payer_first_name || '—'} ` +
+    `(${username} / ID: ${payment.user_id})\n` +
+    `📦 Tarif: ${paymentPlanLabel(payment.plan)}\n` +
+    `💰 Summa: ${Number(payment.amount_uzs || 0).toLocaleString('uz-UZ')} so‘m\n` +
+    `🆔 To‘lov ID: #${payment.id}`
+  );
+}
+
+bot.on('photo', async (ctx, next) => {
+  const session = receiptSessions.get(ctx.from.id);
+  if (!session?.plan) return next();
+
+  try {
+    const photo = ctx.message.photo?.[ctx.message.photo.length - 1];
+    if (!photo?.file_id) {
+      return ctx.reply('Chek rasmini qayta yuboring.');
+    }
+
+    const payment = await createPayment({
+      userId: ctx.from.id,
+      plan: session.plan,
+      receiptPhotoId: photo.file_id,
+      firstName: ctx.from.first_name,
+      username: ctx.from.username,
+    });
+    receiptSessions.delete(ctx.from.id);
+
+    await ctx.reply(
+      '✅ To‘lov cheki qabul qilindi!\n' +
+        'Admin tasdiqlashi bilan obunangiz avtomatik yoqiladi ' +
+        '(odatiy vaqt: 5–15 daqiqa).'
+    );
+
+    if (!ADMIN_CHAT_ID) {
+      console.error('[payment] ADMIN_CHAT_ID/ADMIN_IDS sozlanmagan');
+      return;
+    }
+
+    await ctx.telegram.sendPhoto(ADMIN_CHAT_ID, photo.file_id, {
+      parse_mode: 'HTML',
+      caption: adminPaymentCaption(payment, ctx.from),
+      ...Markup.inlineKeyboard([
+        [
+          Markup.button.callback('✅ Tasdiqlash', `approve_pay_${payment.id}`),
+          Markup.button.callback('❌ Rad etish', `reject_pay_${payment.id}`),
+        ],
+      ]),
+    });
+  } catch (err) {
+    console.error('[payment.receipt]', err.message);
+    await ctx.reply('Chekni saqlashda xatolik. Iltimos, qayta yuboring.');
+  }
+});
 
 async function askSharePhone(ctx, hint) {
   return ctx.reply(hint || '📱 Davom etish uchun telefon raqamingizni yuboring:', {
@@ -706,6 +843,87 @@ bot.action(/^role_(client|driver)$/, async (ctx) => {
   } catch (err) {
     console.error('[role]', err.message);
     await ctx.answerCbQuery('Xatolik yuz berdi');
+  }
+});
+
+async function editPaymentAdminMessage(ctx, text) {
+  try {
+    if (ctx.callbackQuery?.message?.photo) {
+      await ctx.editMessageCaption(`${ctx.callbackQuery.message.caption || ''}\n\n${text}`, {
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: [] },
+      });
+    } else {
+      await ctx.editMessageText(text, {
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: [] },
+      });
+    }
+  } catch (err) {
+    console.warn('[payment.admin.edit]', err.message);
+  }
+}
+
+bot.action(/^approve_pay_(\d+)$/, async (ctx) => {
+  if (!isAdmin(ctx.from.id)) {
+    return ctx.answerCbQuery('Faqat admin uchun', { show_alert: true });
+  }
+  const paymentId = Number(ctx.match[1]);
+  try {
+    const result = await approvePayment(paymentId);
+    if (!result.ok) return ctx.answerCbQuery('Bu to‘lov allaqachon ko‘rib chiqilgan');
+
+    await ctx.answerCbQuery('Tasdiqlandi');
+    await editPaymentAdminMessage(
+      ctx,
+      `✅ <b>Tasdiqlangan — ${new Date().toLocaleString('uz-UZ')}</b>`
+    );
+
+    try {
+      await ctx.telegram.sendMessage(
+        result.payment.user_id,
+        `🎉 <b>To‘lovingiz tasdiqlandi!</b>\n` +
+          `${paymentPlanLabel(result.payment.plan)} faollashtirildi.\n` +
+          'Endi yuklaringiz mos haydovchilarga zudlik bilan PUSH qilinadi. ' +
+          'Boshlash uchun menyudan yuk joylang!',
+        { parse_mode: 'HTML' }
+      );
+    } catch (notifyErr) {
+      console.error('[payment.approve.notify]', notifyErr.message);
+    }
+  } catch (err) {
+    console.error('[payment.approve]', err.message);
+    await ctx.answerCbQuery('Tasdiqlashda xatolik');
+  }
+});
+
+bot.action(/^reject_pay_(\d+)$/, async (ctx) => {
+  if (!isAdmin(ctx.from.id)) {
+    return ctx.answerCbQuery('Faqat admin uchun', { show_alert: true });
+  }
+  const paymentId = Number(ctx.match[1]);
+  try {
+    const result = await rejectPayment(paymentId);
+    if (!result.ok) return ctx.answerCbQuery('Bu to‘lov allaqachon ko‘rib chiqilgan');
+
+    await ctx.answerCbQuery('Rad etildi');
+    await editPaymentAdminMessage(
+      ctx,
+      `❌ <b>Rad etilgan — ${new Date().toLocaleString('uz-UZ')}</b>`
+    );
+
+    try {
+      await ctx.telegram.sendMessage(
+        result.payment.user_id,
+        `❌ To‘lov chekingiz tasdiqlanmadi.\n` +
+          `Iltimos, admin bilan bog‘laning: @${ADMIN_USERNAME.replace(/^@/, '')}`
+      );
+    } catch (notifyErr) {
+      console.error('[payment.reject.notify]', notifyErr.message);
+    }
+  } catch (err) {
+    console.error('[payment.reject]', err.message);
+    await ctx.answerCbQuery('Rad etishda xatolik');
   }
 });
 
@@ -1243,7 +1461,14 @@ bot.action('brk_publish', async (ctx) => {
 
   await ctx.answerCbQuery('Guruhga joylanmoqda...');
 
+  let slot = null;
   try {
+    slot = await reserveOrderSlot(userId);
+    if (!slot.allowed) {
+      await replySubscriptionRequired(ctx);
+      return;
+    }
+
     const order = await insertBrokerOrder({
       truck_type: session.truck_type,
       from_region: session.from_region,
@@ -1286,6 +1511,9 @@ bot.action('brk_publish', async (ctx) => {
       );
     }
   } catch (err) {
+    if (slot?.reserved) {
+      await releaseOrderSlot(userId, slot.reason);
+    }
     console.error('[brk_publish]', err.message);
     await ctx.reply("Saqlashda xatolik. Qayta urinib ko'ring.", mainMenuKeyboard());
   }
@@ -1769,6 +1997,14 @@ bot.action(/^accept_order_(.+)$/, async (ctx) => {
     );
 
     await markOrderTakenForOthers(ctx.telegram, order, driverId);
+
+    try {
+      const driver = await getDriverProfile(driverId);
+      const driverUser = await getUserById(driverId);
+      await sendDriverAcceptedReport(ctx.telegram, order, driver, driverUser);
+    } catch (reportErr) {
+      console.error('[accept_order] broker report:', reportErr.message);
+    }
 
     // 30 daqiqadan so'ng "kelishdingizmi?" feedback yuboriladi
     scheduleFeedback(orderId, driverId).catch(() => {});

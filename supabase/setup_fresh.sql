@@ -9,6 +9,11 @@ CREATE TABLE IF NOT EXISTS users (
   id          BIGINT PRIMARY KEY,
   phone       TEXT NOT NULL,
   role        TEXT CHECK (role IN ('role_client', 'role_driver')),
+  subscription_plan TEXT NOT NULL DEFAULT 'free',
+  subscription_expires_at TIMESTAMPTZ,
+  daily_orders_count INTEGER NOT NULL DEFAULT 0,
+  last_order_date DATE NOT NULL DEFAULT CURRENT_DATE,
+  single_order_credits INTEGER NOT NULL DEFAULT 0,
   created_at  TIMESTAMPTZ DEFAULT NOW(),
   updated_at  TIMESTAMPTZ DEFAULT NOW()
 );
@@ -72,6 +77,19 @@ CREATE TABLE IF NOT EXISTS order_tracking (
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS payments (
+  id                BIGSERIAL PRIMARY KEY,
+  user_id           BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  plan              TEXT NOT NULL CHECK (plan IN ('pro_weekly', 'pro_monthly', 'single_order')),
+  amount_uzs        BIGINT NOT NULL CHECK (amount_uzs > 0),
+  receipt_photo_id  TEXT NOT NULL,
+  payer_first_name  TEXT,
+  payer_username    TEXT,
+  status            TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending', 'approved', 'rejected')),
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- Indekslar
 CREATE INDEX IF NOT EXISTS idx_drivers_match ON drivers (car_type, preferred_route);
 CREATE INDEX IF NOT EXISTS idx_drivers_status ON drivers (status);
@@ -93,12 +111,14 @@ ALTER TABLE drivers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
 ALTER TABLE brokers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE order_tracking ENABLE ROW LEVEL SECURITY;
+ALTER TABLE payments ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS "bot_users_all" ON users;
 DROP POLICY IF EXISTS "bot_drivers_all" ON drivers;
 DROP POLICY IF EXISTS "bot_orders_all" ON orders;
 DROP POLICY IF EXISTS "bot_brokers_all" ON brokers;
 DROP POLICY IF EXISTS "bot_order_tracking_all" ON order_tracking;
+DROP POLICY IF EXISTS "bot_payments_all" ON payments;
 
 CREATE POLICY "bot_users_all" ON users
   FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
@@ -113,4 +133,7 @@ CREATE POLICY "bot_brokers_all" ON brokers
   FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
 
 CREATE POLICY "bot_order_tracking_all" ON order_tracking
+  FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+
+CREATE POLICY "bot_payments_all" ON payments
   FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);

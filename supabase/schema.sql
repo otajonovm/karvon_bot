@@ -5,6 +5,11 @@ CREATE TABLE IF NOT EXISTS users (
   id          BIGINT PRIMARY KEY,          -- Telegram user ID
   phone       TEXT NOT NULL,
   role        TEXT CHECK (role IN ('role_client', 'role_driver')),
+  subscription_plan TEXT NOT NULL DEFAULT 'free',
+  subscription_expires_at TIMESTAMPTZ,
+  daily_orders_count INTEGER NOT NULL DEFAULT 0,
+  last_order_date DATE NOT NULL DEFAULT CURRENT_DATE,
+  single_order_credits INTEGER NOT NULL DEFAULT 0,
   created_at  TIMESTAMPTZ DEFAULT NOW(),
   updated_at  TIMESTAMPTZ DEFAULT NOW()
 );
@@ -68,6 +73,19 @@ CREATE TABLE IF NOT EXISTS order_tracking (
   latitude    DOUBLE PRECISION NOT NULL,
   longitude   DOUBLE PRECISION NOT NULL,
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS payments (
+  id                BIGSERIAL PRIMARY KEY,
+  user_id           BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  plan              TEXT NOT NULL CHECK (plan IN ('pro_weekly', 'pro_monthly', 'single_order')),
+  amount_uzs        BIGINT NOT NULL CHECK (amount_uzs > 0),
+  receipt_photo_id  TEXT NOT NULL,
+  payer_first_name  TEXT,
+  payer_username    TEXT,
+  status            TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending', 'approved', 'rejected')),
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_drivers_match ON drivers (car_type, preferred_route);
