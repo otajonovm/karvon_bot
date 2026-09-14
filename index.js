@@ -905,7 +905,7 @@ bot.action('admin_check_payments', async (ctx) => {
     await ctx.reply(text, { parse_mode: 'HTML' });
   } catch (err) {
     console.error('[admin.payments]', err.message);
-    await ctx.answerCbQuery('Ma''lumotlar yuklab bo''lmadi', { show_alert: true });
+    await ctx.answerCbQuery("Ma'lumotlar yuklab bo'lmadi", { show_alert: true });
   }
 });
 
