@@ -53,7 +53,7 @@ const { getRoyalCargoGroupId, isAdmin } = require('./config/constants');
 const { isDbUnreachable, logDbError } = require('./lib/dbError');
 const { resolveSupabaseUrl } = require('./lib/supabase');
 const { markLaunched, markOk, markError } = require('./lib/botHealth');
-const { collectAdminStats, formatAdminPanel } = require('./lib/admin');
+const { collectAdminStats, formatAdminPanel, getAdminPanelMarkup } = require('./lib/admin');
 const { ANY_DEST, buildSaveFields, regionBySlug, formatRouteLabel } = require('./lib/driverRoutes');
 const { formatDriverCard, telegramDisplayName } = require('./lib/driverCard');
 const {
@@ -847,7 +847,7 @@ bot.hears(BTN_ADMIN, async (ctx) => {
     const stats = await collectAdminStats();
     await ctx.reply(formatAdminPanel(stats), {
       parse_mode: 'HTML',
-      ...mainMenuKeyboard({ isAdmin: true }),
+      ...getAdminPanelMarkup(),
     });
   } catch (err) {
     console.error('[admin]', err.message);
@@ -859,6 +859,76 @@ bot.hears(BTN_ADMIN, async (ctx) => {
 bot.hears(BTN_BACK_MAIN, async (ctx) => {
   await sendMainMenu(ctx, '🏠 Asosiy menyu');
 });
+
+// Admin statistika yangilash callback
+bot.action('admin_refresh_stats', async (ctx) => {
+  if (!isAdmin(ctx.from.id)) {
+    return ctx.answerCbQuery('Faqat admin uchun', { show_alert: true });
+  }
+  try {
+    await ctx.answerCbQuery('🔄 Yangilash jarayonda...');
+    const stats = await collectAdminStats();
+    await ctx.editMessageText(formatAdminPanel(stats), {
+      parse_mode: 'HTML',
+      reply_markup: getAdminPanelMarkup().reply_markup,
+    });
+  } catch (err) {
+    console.error('[admin.refresh]', err.message);
+    await ctx.answerCbQuery('Yangilashda xatolik', { show_alert: true });
+  }
+});
+
+// Admin to'lovlarni tekshirish callback
+bot.action('admin_check_payments', async (ctx) => {
+  if (!isAdmin(ctx.from.id)) {
+    return ctx.answerCbQuery('Faqat admin uchun', { show_alert: true });
+  }
+  try {
+    await ctx.answerCbQuery();
+    const { data: pendingPayments } = await supabase
+      .from('payments')
+      .select('*')
+      .eq('status', 'pending')
+      .order('created_at', { ascending: false })
+      .limit(10);
+
+    if (!pendingPayments || pendingPayments.length === 0) {
+      return ctx.reply('✅ Kutilayotgan to\'lovlar yo\'q.');
+    }
+
+    let text = '💳 <b>Kutilayotgan To\'lovlar (oxirgi 10 ta)</b>\n━━━━━━━━━━━━━━━\n';
+    for (const p of pendingPayments) {
+      const plan = p.plan || 'unknown';
+      const amount = p.amount_uzs || 0;
+      text += `\n• ID: <code>${p.id}</code>\n  Foydalanuvchi: ${p.user_id}\n  Summa: ${amount} so\'m (${plan})\n  Sana: ${new Date(p.created_at).toLocaleString('uz-UZ')}`;
+    }
+    await ctx.reply(text, { parse_mode: 'HTML' });
+  } catch (err) {
+    console.error('[admin.payments]', err.message);
+    await ctx.answerCbQuery('Ma''lumotlar yuklab bo''lmadi', { show_alert: true });
+  }
+});
+
+// Admin broadcast callback
+bot.action('admin_broadcast', async (ctx) => {
+  if (!isAdmin(ctx.from.id)) {
+    return ctx.answerCbQuery('Faqat admin uchun', { show_alert: true });
+  }
+  try {
+    await ctx.answerCbQuery();
+    await ctx.reply(
+      '📢 <b>Broadcast Xabar</b>\n\n' +
+      'Quyidagi xabanni kiriting (barcha foydalanuvchilarga yuboriladi):\n\n' +
+      '/broadcast_send &lt;xabar matni&gt;\n\n' +
+      'Masalan: /broadcast_send Salom! Yangi xususiyat qo\'shildi!',
+      { parse_mode: 'HTML' }
+    );
+  } catch (err) {
+    console.error('[admin.broadcast]', err.message);
+    await ctx.answerCbQuery('Xatolik', { show_alert: true });
+  }
+});
+
 
 // ─── Role selection (eski inline xabarlar uchun) ─────────────────────────────
 
@@ -2272,3 +2342,4 @@ process.on('uncaughtException', (err) => {
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
+
